@@ -8,7 +8,6 @@ import '../../database/job_code_settings_dao.dart';
 import '../../models/employee.dart';
 import '../../models/time_off_entry.dart';
 import '../../models/shift_template.dart';
-import '../../models/job_code_settings.dart';
 
 // Custom intents for keyboard shortcuts
 class CopyIntent extends Intent {
@@ -53,6 +52,7 @@ class _ScheduleViewState extends State<ScheduleView> {
   final TimeOffDao _timeOffDao = TimeOffDao();
   List<Employee> _employees = [];
   List<ShiftPlaceholder> _shifts = [];
+  List<ShiftPlaceholder> _manualShifts = []; // Shifts added through UI, not from database
 
   // simple in-memory clipboard for copy/paste: stores start TimeOfDay, duration, and text
   Map<String, Object?>? _clipboard;
@@ -92,7 +92,8 @@ class _ScheduleViewState extends State<ScheduleView> {
     final timeOffShifts = _timeOffToShifts(timeOffEntries);
     if (!mounted) return;
     setState(() {
-      _shifts = timeOffShifts;
+      // Combine database time-off shifts with manually added shifts
+      _shifts = [...timeOffShifts, ..._manualShifts];
     });
   }
 
@@ -173,32 +174,35 @@ class _ScheduleViewState extends State<ScheduleView> {
     return Row(
       children: [
         Expanded(
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              IconButton(
-                onPressed: _prev, 
-                icon: const Icon(Icons.chevron_left),
-                padding: const EdgeInsets.all(8),
-                constraints: const BoxConstraints(),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _mode == ScheduleMode.monthly
-                    ? "${_monthName(_date.month)} ${_date.year} (Monthly view disabled)"
-                    : _mode == ScheduleMode.weekly
-                        ? "Week of ${_date.month}/${_date.day}/${_date.year}"
-                        : "${_dayOfWeekAbbr(_date)}, ${_monthName(_date.month)} ${_date.day}, ${_date.year}",
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                onPressed: _next, 
-                icon: const Icon(Icons.chevron_right),
-                padding: const EdgeInsets.all(8),
-                constraints: const BoxConstraints(),
-              ),
-            ],
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  onPressed: _prev, 
+                  icon: const Icon(Icons.chevron_left),
+                  padding: const EdgeInsets.all(8),
+                  constraints: const BoxConstraints(),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _mode == ScheduleMode.monthly
+                      ? "${_monthName(_date.month)} ${_date.year} (Monthly view disabled)"
+                      : _mode == ScheduleMode.weekly
+                          ? "Week of ${_date.month}/${_date.day}/${_date.year}"
+                          : "${_dayOfWeekAbbr(_date)}, ${_monthName(_date.month)} ${_date.day}, ${_date.year}",
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _next, 
+                  icon: const Icon(Icons.chevron_right),
+                  padding: const EdgeInsets.all(8),
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
           ),
         ),
         const SizedBox(width: 8),
@@ -250,24 +254,31 @@ class _ScheduleViewState extends State<ScheduleView> {
         if (tod.hour == 0 || tod.hour == 1) start = start.add(const Duration(days: 1));
         final end = start.add(dur);
         setState(() {
-          _shifts.add(ShiftPlaceholder(employeeId: employeeId, start: start, end: end, text: _clipboard!['text'] as String));
+          final newShift = ShiftPlaceholder(employeeId: employeeId, start: start, end: end, text: _clipboard!['text'] as String);
+          _manualShifts.add(newShift);
+          _shifts.add(newShift);
           _clipboard = null; // Clear clipboard after pasting
         });
       },
       onUpdateShift: (oldShift, newStart, newEnd) {
         setState(() {
-          final i = _shifts.indexWhere((s) => s == oldShift);
-          if (i >= 0) {
-            // If start == end, it's a delete signal
-            if (newStart == newEnd) {
-              _shifts.removeAt(i);
-            } else {
-              _shifts[i] = ShiftPlaceholder(employeeId: oldShift.employeeId, start: newStart, end: newEnd, text: oldShift.text);
-            }
+          // Check if it's a manual shift
+          final manualIdx = _manualShifts.indexWhere((s) => s == oldShift);
+          final shiftsIdx = _shifts.indexWhere((s) => s == oldShift);
+          
+          if (newStart == newEnd) {
+            // Delete
+            if (manualIdx >= 0) _manualShifts.removeAt(manualIdx);
+            if (shiftsIdx >= 0) _shifts.removeAt(shiftsIdx);
           } else {
-            // New shift (e.g., "Off" marked from empty cell)
-            if (newStart != newEnd) {
-              _shifts.add(ShiftPlaceholder(employeeId: oldShift.employeeId, start: newStart, end: newEnd, text: oldShift.text));
+            // Update or add
+            final newShift = ShiftPlaceholder(employeeId: oldShift.employeeId, start: newStart, end: newEnd, text: oldShift.text);
+            if (manualIdx >= 0) {
+              _manualShifts[manualIdx] = newShift;
+              if (shiftsIdx >= 0) _shifts[shiftsIdx] = newShift;
+            } else {
+              _manualShifts.add(newShift);
+              _shifts.add(newShift);
             }
           }
         });
@@ -281,16 +292,23 @@ class _ScheduleViewState extends State<ScheduleView> {
       shifts: _shifts,
       onUpdateShift: (oldShift, newStart, newEnd) {
         setState(() {
-          final i = _shifts.indexWhere((s) => s == oldShift);
-          if (i >= 0) {
-            if (newStart == newEnd) {
-              _shifts.removeAt(i);
-            } else {
-              _shifts[i] = ShiftPlaceholder(employeeId: oldShift.employeeId, start: newStart, end: newEnd, text: oldShift.text);
-            }
+          // Check if it's a manual shift
+          final manualIdx = _manualShifts.indexWhere((s) => s == oldShift);
+          final shiftsIdx = _shifts.indexWhere((s) => s == oldShift);
+          
+          if (newStart == newEnd) {
+            // Delete
+            if (manualIdx >= 0) _manualShifts.removeAt(manualIdx);
+            if (shiftsIdx >= 0) _shifts.removeAt(shiftsIdx);
           } else {
-            if (newStart != newEnd) {
-              _shifts.add(ShiftPlaceholder(employeeId: oldShift.employeeId, start: newStart, end: newEnd, text: oldShift.text));
+            // Update or add
+            final newShift = ShiftPlaceholder(employeeId: oldShift.employeeId, start: newStart, end: newEnd, text: oldShift.text);
+            if (manualIdx >= 0) {
+              _manualShifts[manualIdx] = newShift;
+              if (shiftsIdx >= 0) _shifts[shiftsIdx] = newShift;
+            } else {
+              _manualShifts.add(newShift);
+              _shifts.add(newShift);
             }
           }
         });
@@ -1114,6 +1132,54 @@ class MonthlyScheduleView extends StatefulWidget {
 
 class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
   ShiftPlaceholder? _selectedShift;
+  final ShiftTemplateDao _shiftTemplateDao = ShiftTemplateDao();
+  final JobCodeSettingsDao _jobCodeDao = JobCodeSettingsDao();
+  final TimeOffDao _timeOffDao = TimeOffDao();
+  final EmployeeAvailabilityDao _availabilityDao = EmployeeAvailabilityDao();
+  final Map<String, Map<String, dynamic>> _availabilityCache = {};
+
+  @override
+  void initState() {
+    super.initState();
+    print('MonthlyScheduleView initState: ${widget.shifts.length} shifts loaded');
+  }
+
+  @override
+  void didUpdateWidget(MonthlyScheduleView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.shifts.length != widget.shifts.length) {
+      print('MonthlyScheduleView didUpdateWidget: shifts changed from ${oldWidget.shifts.length} to ${widget.shifts.length}');
+      for (var shift in widget.shifts) {
+        print('  Shift: employee=${shift.employeeId}, date=${shift.start.year}-${shift.start.month}-${shift.start.day} ${shift.start.hour}:${shift.start.minute}, text=${shift.text}');
+      }
+    }
+  }
+
+  Future<Map<String, dynamic>> _checkAvailability(int employeeId, DateTime date) async {
+    final cacheKey = '$employeeId-${date.year}-${date.month}-${date.day}';
+    if (_availabilityCache.containsKey(cacheKey)) {
+      return _availabilityCache[cacheKey]!;
+    }
+
+    // Priority 1: Check time-off first
+    final timeOffList = await _timeOffDao.getAllTimeOff();
+    final dateStr = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    final hasTimeOff = timeOffList.any((t) => 
+      t.employeeId == employeeId &&
+      '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}' == dateStr
+    );
+    
+    if (hasTimeOff) {
+      final result = {'available': false, 'reason': 'Time off scheduled', 'type': 'time-off'};
+      _availabilityCache[cacheKey] = result;
+      return result;
+    }
+
+    // Priority 2: Check availability patterns
+    final result = await _availabilityDao.isAvailable(employeeId, date, null, null);
+    _availabilityCache[cacheKey] = result;
+    return result;
+  }
 
   List<List<DateTime?>> _buildCalendarWeeks() {
     // Get first and last day of month
@@ -1175,45 +1241,171 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
   }
 
   Future<void> _showEditDialog(BuildContext context, ShiftPlaceholder shift) async {
+    // Find employee for this shift
+    final employee = widget.employees.firstWhere(
+      (e) => e.id == shift.employeeId,
+      orElse: () => widget.employees.first,
+    );
+    final jobCode = employee.jobCode;
+    final day = DateTime(shift.start.year, shift.start.month, shift.start.day);
+
+    // Load templates
+    await _shiftTemplateDao.insertDefaultTemplatesIfMissing(jobCode);
+    final templates = await _shiftTemplateDao.getTemplatesForJobCode(jobCode);
+
+    // Load job code settings for duration
+    final jobCodeSettings = await _jobCodeDao.getByCode(jobCode);
+    final defaultHours = jobCodeSettings?.defaultScheduledHours ?? 8;
+
+    // Check availability
+    final availability = await _checkAvailability(shift.employeeId, day);
+    final isAvailable = availability['available'] as bool;
+    final reason = availability['reason'] as String;
+    final type = availability['type'] as String;
+
+    Color bannerColor = Colors.green;
+    if (type == 'time-off') {
+      bannerColor = Colors.red;
+    } else if (!isAvailable) {
+      bannerColor = Colors.orange;
+    }
+
+    if (!context.mounted) return;
+
     final times = _allowedTimes();
     int selStart = times.indexWhere((t) => t.hour == shift.start.hour && t.minute == shift.start.minute);
     int selEnd = times.indexWhere((t) => t.hour == shift.end.hour && t.minute == shift.end.minute);
     if (selStart == -1) selStart = 0;
     if (selEnd == -1) selEnd = times.length - 1;
 
+    ShiftTemplate? selectedTemplate;
     final result = await showDialog<List<DateTime>>(
       context: context,
       builder: (context) {
         return StatefulBuilder(builder: (context, setDialogState) {
           return AlertDialog(
             title: const Text('Edit Shift'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
+            content: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                DropdownButton<int>(
-                  value: selStart,
-                  items: times.asMap().entries.map((e) {
-                    return DropdownMenuItem(value: e.key, child: Text(_formatTimeOfDay(e.value)));
-                  }).toList(),
-                  onChanged: (v) {
-                    setDialogState(() {
-                      selStart = v!;
-                      if (selStart >= selEnd) selEnd = (selStart + 1).clamp(0, times.length - 1);
-                    });
-                  },
-                ),
-                const Text(' to '),
-                DropdownButton<int>(
-                  value: selEnd,
-                  items: times.asMap().entries.map((e) {
-                    return DropdownMenuItem(value: e.key, child: Text(_formatTimeOfDay(e.value)));
-                  }).toList(),
-                  onChanged: (v) {
-                    setDialogState(() {
-                      selEnd = v!;
-                      if (selEnd <= selStart) selStart = (selEnd - 1).clamp(0, times.length - 1);
-                    });
-                  },
+                if (templates.isNotEmpty)
+                  Container(
+                    width: 140,
+                    padding: const EdgeInsets.only(right: 16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text('Templates:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                        const SizedBox(height: 8),
+                        ...templates.map((template) {
+                          final parts = template.startTime.split(':');
+                          final startHour = int.parse(parts[0]);
+                          final startMin = int.parse(parts[1]);
+                          final endTime = DateTime(2000, 1, 1, startHour, startMin)
+                              .add(Duration(hours: defaultHours));
+                          final endTimeStr = '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}';
+
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                backgroundColor: selectedTemplate == template ? Colors.blue.withOpacity(0.1) : null,
+                                side: BorderSide(
+                                  color: selectedTemplate == template ? Colors.blue : Colors.grey,
+                                  width: selectedTemplate == template ? 2 : 1,
+                                ),
+                              ),
+                              onPressed: () {
+                                int startIdx = times.indexWhere((t) => t.hour == startHour && t.minute == startMin);
+                                if (startIdx == -1) startIdx = 0;
+                                
+                                int endIdx = startIdx + (defaultHours * 4);
+                                if (endIdx >= times.length) endIdx = times.length - 1;
+
+                                setDialogState(() {
+                                  selectedTemplate = template;
+                                  selStart = startIdx;
+                                  selEnd = endIdx;
+                                });
+                              },
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(template.templateName, style: const TextStyle(fontSize: 11)),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${template.startTime}-$endTimeStr',
+                                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: bannerColor.withOpacity(0.2),
+                          border: Border.all(color: bannerColor),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              type == 'time-off' ? Icons.event_busy : (isAvailable ? Icons.check_circle : Icons.warning),
+                              color: bannerColor,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                reason,
+                                style: TextStyle(color: bannerColor.withOpacity(0.9), fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      DropdownButton<int>(
+                        value: selStart,
+                        isExpanded: true,
+                        items: times.asMap().entries.map((e) {
+                          return DropdownMenuItem(value: e.key, child: Text(_formatTimeOfDay(e.value)));
+                        }).toList(),
+                        onChanged: (v) {
+                          setDialogState(() {
+                            selStart = v!;
+                            if (selStart >= selEnd) selEnd = (selStart + 1).clamp(0, times.length - 1);
+                            selectedTemplate = null;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButton<int>(
+                        value: selEnd,
+                        isExpanded: true,
+                        items: times.asMap().entries.map((e) {
+                          return DropdownMenuItem(value: e.key, child: Text(_formatTimeOfDay(e.value)));
+                        }).toList(),
+                        onChanged: (v) {
+                          setDialogState(() {
+                            selEnd = v!;
+                            if (selEnd <= selStart) selStart = (selEnd - 1).clamp(0, times.length - 1);
+                            selectedTemplate = null;
+                          });
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -1221,12 +1413,15 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
               TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
               TextButton(
                 onPressed: () {
-                  final day = DateTime(shift.start.year, shift.start.month, shift.start.day);
                   final newStart = _timeOfDayToDateTime(day, times[selStart]);
                   final newEnd = _timeOfDayToDateTime(day, times[selEnd]);
-                  Navigator.pop(context, [newStart, newEnd]);
+                  if (!newEnd.isAfter(newStart)) {
+                    Navigator.pop(context, [newStart, newStart.add(const Duration(hours: 1))]);
+                  } else {
+                    Navigator.pop(context, [newStart, newEnd]);
+                  }
                 },
-                child: const Text('OK'),
+                child: const Text('Save'),
               ),
             ],
           );
@@ -1271,53 +1466,60 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
             ? (availableWidth / widget.employees.length).clamp(80.0, 200.0)
             : 100.0;
 
+        // Account for borders (2px on each side = 4px total)
+        final totalWidth = dayColumnWidth + (cellWidth * widget.employees.length) + 4;
+
         return Column(
           children: [
-            // Header row with employee names
-            Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                border: Border.all(color: Theme.of(context).dividerColor, width: 2),
-              ),
-              child: Row(
-                children: [
-                  // Empty corner cell
-                  SizedBox(
-                    width: dayColumnWidth,
-                    height: 60,
-                    child: const Center(
-                      child: Text('Day', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            // Header row with employee names - horizontally scrollable
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Container(
+                width: totalWidth,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  border: Border.all(color: Theme.of(context).dividerColor, width: 2),
+                ),
+                child: Row(
+                  children: [
+                    // Empty corner cell
+                    SizedBox(
+                      width: dayColumnWidth,
+                      height: 60,
+                      child: const Center(
+                        child: Text('Day', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      ),
                     ),
-                  ),
-                  // Employee headers
-                  ...widget.employees.map((employee) => Container(
-                    width: cellWidth,
-                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-                    decoration: BoxDecoration(
-                      border: Border(left: BorderSide(color: Theme.of(context).dividerColor)),
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        CircleAvatar(
-                          radius: 14,
-                          child: Text(
-                            employee.name.isNotEmpty ? employee.name[0] : '?',
-                            style: const TextStyle(fontSize: 12),
+                    // Employee headers
+                    ...widget.employees.map((employee) => Container(
+                      width: cellWidth,
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                      decoration: BoxDecoration(
+                        border: Border(left: BorderSide(color: Theme.of(context).dividerColor)),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CircleAvatar(
+                            radius: 14,
+                            child: Text(
+                              employee.name.isNotEmpty ? employee.name[0] : '?',
+                              style: const TextStyle(fontSize: 12),
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          employee.name,
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  )),
-                ],
+                          const SizedBox(height: 4),
+                          Text(
+                            employee.name,
+                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    )),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -1329,45 +1531,48 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                 itemBuilder: (context, weekIndex) {
                   final week = weeks[weekIndex];
                   
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Theme.of(context).dividerColor, width: 2),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      children: week.asMap().entries.map((entry) {
-                        final dayIndex = entry.key;
-                        final day = entry.value;
-                        
-                        if (day == null) {
-                          return const SizedBox.shrink();
-                        }
+                  return SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Container(
+                      width: totalWidth,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Theme.of(context).dividerColor, width: 2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: week.asMap().entries.map((entry) {
+                          final dayIndex = entry.key;
+                          final day = entry.value;
+                          
+                          if (day == null) {
+                            return const SizedBox.shrink();
+                          }
 
-                        final isCurrentMonth = day.month == widget.date.month;
-                        final isWeekend = day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
-                        final dayName = dayNames[day.weekday % 7];
-                        
-                        return Container(
-                          decoration: BoxDecoration(
-                            border: dayIndex < 6 
-                                ? Border(bottom: BorderSide(color: Theme.of(context).dividerColor))
-                                : null,
-                          ),
-                          child: IntrinsicHeight(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                // Day label column
-                                Container(
-                                  width: dayColumnWidth,
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    border: Border(right: BorderSide(color: Theme.of(context).dividerColor, width: 2)),
-                                    color: isWeekend
-                                        ? Theme.of(context).colorScheme.primaryContainer.withAlpha(51)
-                                        : !isCurrentMonth
-                                            ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(25)
+                          final isCurrentMonth = day.month == widget.date.month;
+                          final isWeekend = day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
+                          final dayName = dayNames[day.weekday % 7];
+                          
+                          return Container(
+                            decoration: BoxDecoration(
+                              border: dayIndex < 6 
+                                  ? Border(bottom: BorderSide(color: Theme.of(context).dividerColor))
+                                  : null,
+                            ),
+                            child: IntrinsicHeight(
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  // Day label column
+                                  Container(
+                                    width: dayColumnWidth,
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      border: Border(right: BorderSide(color: Theme.of(context).dividerColor, width: 2)),
+                                      color: isWeekend
+                                          ? Theme.of(context).colorScheme.primaryContainer.withAlpha(51)
+                                          : !isCurrentMonth
+                                              ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(25)
                                             : null,
                                   ),
                                   child: Column(
@@ -1399,29 +1604,41 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                 ),
                                 // Employee cells for this day
                                 ...widget.employees.map((employee) {
-                                  final shiftsForCell = widget.shifts.where((s) =>
-                                    s.employeeId == employee.id &&
-                                    s.start.year == day.year &&
-                                    s.start.month == day.month &&
-                                    s.start.day == day.day
-                                  ).toList();
+                                  final shiftsForCell = widget.shifts.where((s) {
+                                    final match = s.employeeId == employee.id &&
+                                      s.start.year == day.year &&
+                                      s.start.month == day.month &&
+                                      s.start.day == day.day;
+                                    if (match) {
+                                      debugPrint('Found shift for ${employee.name} on ${day.month}/${day.day}: ${s.text}');
+                                    }
+                                    return match;
+                                  }).toList();
 
-                                  return Container(
-                                    width: cellWidth,
-                                    padding: const EdgeInsets.all(6),
-                                    decoration: BoxDecoration(
-                                      border: Border(left: BorderSide(color: Theme.of(context).dividerColor)),
-                                      color: !isCurrentMonth
-                                          ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(25)
-                                          : isWeekend
-                                              ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(51)
-                                              : null,
-                                    ),
-                                    child: shiftsForCell.isEmpty
-                                        ? const Center(
-                                            child: Text('-', style: TextStyle(color: Colors.grey, fontSize: 16)),
-                                          )
-                                        : Column(
+                                  return GestureDetector(
+                                    onTap: shiftsForCell.isEmpty ? () {
+                                      // Empty cell - show add shift dialog
+                                      _showEditDialog(context, ShiftPlaceholder(
+                                        employeeId: employee.id!,
+                                        start: DateTime(day.year, day.month, day.day, 9, 0),
+                                        end: DateTime(day.year, day.month, day.day, 17, 0),
+                                        text: '',
+                                      ));
+                                    } : null,
+                                    child: Container(
+                                      width: cellWidth,
+                                      padding: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(
+                                        border: Border(left: BorderSide(color: Theme.of(context).dividerColor)),
+                                        color: !isCurrentMonth
+                                            ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(25)
+                                            : isWeekend
+                                                ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(51)
+                                                : null,
+                                      ),
+                                      child: shiftsForCell.isEmpty
+                                          ? const SizedBox.shrink() // Empty cell shows nothing
+                                          : Column(
                                             crossAxisAlignment: CrossAxisAlignment.stretch,
                                             mainAxisAlignment: MainAxisAlignment.center,
                                             children: shiftsForCell.map((shift) {
@@ -1501,6 +1718,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                               );
                                             }).toList(),
                                           ),
+                                    ),
                                   );
                                 }),
                               ],
@@ -1508,6 +1726,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                           ),
                         );
                       }).toList(),
+                      ),
                     ),
                   );
                 },
