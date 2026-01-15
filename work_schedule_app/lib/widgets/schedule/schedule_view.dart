@@ -55,7 +55,13 @@ class _ScheduleViewState extends State<ScheduleView> {
   final TimeOffDao _timeOffDao = TimeOffDao();
   final ShiftDao _shiftDao = ShiftDao();
   List<Employee> _employees = [];
+  List<Employee> _filteredEmployees = [];
   List<ShiftPlaceholder> _shifts = [];
+
+  // Filter state
+  String _filterType = 'all'; // 'all', 'jobCode', 'employee'
+  String? _selectedJobCode;
+  int? _selectedEmployeeId;
 
   // simple in-memory clipboard for copy/paste: stores start TimeOfDay, duration, and text
   Map<String, Object?>? _clipboard;
@@ -130,9 +136,32 @@ class _ScheduleViewState extends State<ScheduleView> {
 
     setState(() {
       _employees = _sortEmployeesByJobCode(list);
+      _applyFilter();
     });
 
     await _refreshShifts();
+  }
+
+  void _applyFilter() {
+    if (_filterType == 'all') {
+      _filteredEmployees = List.from(_employees);
+    } else if (_filterType == 'jobCode' && _selectedJobCode != null) {
+      _filteredEmployees = _employees.where((e) => 
+        e.jobCode.toLowerCase() == _selectedJobCode!.toLowerCase()
+      ).toList();
+    } else if (_filterType == 'employee' && _selectedEmployeeId != null) {
+      _filteredEmployees = _employees.where((e) => 
+        e.id == _selectedEmployeeId
+      ).toList();
+    } else {
+      _filteredEmployees = List.from(_employees);
+    }
+  }
+
+  List<String> get _uniqueJobCodes {
+    final codes = _employees.map((e) => e.jobCode).toSet().toList();
+    codes.sort();
+    return codes;
   }
 
   List<Employee> _sortEmployeesByJobCode(List<Employee> employees) {
@@ -232,9 +261,88 @@ class _ScheduleViewState extends State<ScheduleView> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildControls(context),
+        _buildFilterRow(context),
         const SizedBox(height: 8),
         Expanded(child: _buildBody()),
       ],
+    );
+  }
+
+  Widget _buildFilterRow(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          const Icon(Icons.filter_list, size: 20),
+          const SizedBox(width: 8),
+          const Text('Filter:', style: TextStyle(fontWeight: FontWeight.w500)),
+          const SizedBox(width: 12),
+          // Filter type selector
+          DropdownButton<String>(
+            value: _filterType,
+            underline: const SizedBox(),
+            items: const [
+              DropdownMenuItem(value: 'all', child: Text('All Employees')),
+              DropdownMenuItem(value: 'jobCode', child: Text('By Job Code')),
+              DropdownMenuItem(value: 'employee', child: Text('By Employee')),
+            ],
+            onChanged: (value) {
+              setState(() {
+                _filterType = value ?? 'all';
+                _selectedJobCode = null;
+                _selectedEmployeeId = null;
+                _applyFilter();
+              });
+            },
+          ),
+          const SizedBox(width: 12),
+          // Secondary selector based on filter type
+          if (_filterType == 'jobCode')
+            DropdownButton<String>(
+              value: _selectedJobCode,
+              hint: const Text('Select Job Code'),
+              underline: const SizedBox(),
+              items: _uniqueJobCodes.map((code) => 
+                DropdownMenuItem(value: code, child: Text(code))
+              ).toList(),
+              onChanged: (value) {
+                setState(() {
+                  _selectedJobCode = value;
+                  _applyFilter();
+                });
+              },
+            ),
+          if (_filterType == 'employee')
+            DropdownButton<int>(
+              value: _selectedEmployeeId,
+              hint: const Text('Select Employee'),
+              underline: const SizedBox(),
+              items: _employees.map((emp) => 
+                DropdownMenuItem(value: emp.id, child: Text(emp.name))
+              ).toList(),
+              onChanged: (value) {
+                setState(() {
+                  _selectedEmployeeId = value;
+                  _applyFilter();
+                });
+              },
+            ),
+          const Spacer(),
+          if (_filterType != 'all')
+            TextButton.icon(
+              icon: const Icon(Icons.clear, size: 18),
+              label: const Text('Clear Filter'),
+              onPressed: () {
+                setState(() {
+                  _filterType = 'all';
+                  _selectedJobCode = null;
+                  _selectedEmployeeId = null;
+                  _applyFilter();
+                });
+              },
+            ),
+        ],
+      ),
     );
   }
 
@@ -326,12 +434,12 @@ class _ScheduleViewState extends State<ScheduleView> {
 
   Widget _buildBody() {
     if (_mode == ScheduleMode.daily) {
-      return DailyScheduleView(date: _date, employees: _employees, shifts: _shifts);
+      return DailyScheduleView(date: _date, employees: _filteredEmployees, shifts: _shifts);
     }
     if (_mode == ScheduleMode.weekly) {
       return WeeklyScheduleView(
       date: _date,
-      employees: _employees,
+      employees: _filteredEmployees,
       shifts: _shifts,
       clipboardAvailable: _clipboard != null,
       onCopyShift: (s) {
@@ -456,7 +564,7 @@ class _ScheduleViewState extends State<ScheduleView> {
 
     return MonthlyScheduleView(
       date: _date,
-      employees: _employees,
+      employees: _filteredEmployees,
       shifts: _shifts,
       onUpdateShift: (oldShift, newStart, newEnd) async {
         if (newStart == newEnd) {
