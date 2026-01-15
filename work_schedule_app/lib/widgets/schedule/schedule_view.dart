@@ -283,6 +283,8 @@ class _ScheduleViewState extends State<ScheduleView> {
       }
     } else if (action == 'clearWeek') {
       await _clearWeek(weekStartDate);
+    } else if (action == 'autoFillFromTemplates') {
+      await _autoFillFromTemplates(weekStartDate);
     }
   }
 
@@ -427,6 +429,204 @@ class _ScheduleViewState extends State<ScheduleView> {
       }
       return null;
     });
+  }
+
+  final ShiftTemplateDao _templateDao = ShiftTemplateDao();
+  final JobCodeSettingsDao _jobCodeSettingsDao = JobCodeSettingsDao();
+
+  Future<void> _autoFillFromTemplates(DateTime weekStart) async {
+    // Get all templates
+    final templates = await _templateDao.getAllTemplates();
+    
+    if (templates.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No shift templates defined. Go to Settings > Shift Templates to create some.'),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+      return;
+    }
+
+    // Get job code settings for default hours
+    final jobCodeSettings = await _jobCodeSettingsDao.getAll();
+    final defaultHoursMap = <String, int>{};
+    for (final setting in jobCodeSettings) {
+      defaultHoursMap[setting.code.toLowerCase()] = setting.defaultScheduledHours;
+    }
+
+    // Show dialog to select days and options
+    if (!mounted) return;
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) {
+        final selectedDays = <int>{1, 2, 3, 4, 5}; // Mon-Fri default (1=Mon, 5=Fri in this context)
+        bool skipExisting = true;
+        
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.auto_fix_high, color: Colors.green),
+                  SizedBox(width: 8),
+                  Text('Auto-Fill from Templates'),
+                ],
+              ),
+              content: SizedBox(
+                width: 400,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Found ${templates.length} template(s) and ${_employees.length} employee(s).',
+                      style: const TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('Select days to fill:'),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: List.generate(7, (i) {
+                        return FilterChip(
+                          label: Text(dayNames[i]),
+                          selected: selectedDays.contains(i),
+                          onSelected: (selected) {
+                            setDialogState(() {
+                              if (selected) {
+                                selectedDays.add(i);
+                              } else {
+                                selectedDays.remove(i);
+                              }
+                            });
+                          },
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 16),
+                    CheckboxListTile(
+                      title: const Text('Skip employees with existing shifts'),
+                      value: skipExisting,
+                      contentPadding: EdgeInsets.zero,
+                      onChanged: (v) => setDialogState(() => skipExisting = v ?? true),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.auto_fix_high),
+                  label: const Text('Auto-Fill'),
+                  onPressed: () => Navigator.pop(ctx, {
+                    'days': selectedDays.toList(),
+                    'skipExisting': skipExisting,
+                  }),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    
+    if (result == null) return;
+    
+    final selectedDays = result['days'] as List<int>;
+    final skipExisting = result['skipExisting'] as bool;
+    
+    if (selectedDays.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select at least one day')),
+        );
+      }
+      return;
+    }
+    
+    // Generate shifts
+    int shiftsCreated = 0;
+    final newShifts = <Shift>[];
+    
+    for (final employee in _employees) {
+      // Find templates matching this employee's job code
+      final matchingTemplates = templates.where(
+        (t) => t.jobCode.toLowerCase() == employee.jobCode.toLowerCase()
+      ).toList();
+      
+      if (matchingTemplates.isEmpty) continue;
+      
+      // Use the first matching template
+      final template = matchingTemplates.first;
+      
+      // Parse template start time (e.g., "9:00 AM")
+      final startTimeParts = template.startTime.replaceAll(RegExp(r'[APMapm]'), '').trim().split(':');
+      var startHour = int.parse(startTimeParts[0]);
+      final startMinute = startTimeParts.length > 1 ? int.parse(startTimeParts[1].trim()) : 0;
+      
+      if (template.startTime.toLowerCase().contains('pm') && startHour != 12) {
+        startHour += 12;
+      } else if (template.startTime.toLowerCase().contains('am') && startHour == 12) {
+        startHour = 0;
+      }
+      
+      // Get default hours for this job code
+      final defaultHours = defaultHoursMap[employee.jobCode.toLowerCase()] ?? 8;
+      
+      for (final dayIndex in selectedDays) {
+        final day = weekStart.add(Duration(days: dayIndex));
+        
+        // Check if employee already has a shift this day
+        if (skipExisting) {
+          final existingShifts = _shifts.where((s) =>
+            s.employeeId == employee.id &&
+            s.start.year == day.year &&
+            s.start.month == day.month &&
+            s.start.day == day.day
+          ).toList();
+          
+          if (existingShifts.isNotEmpty) continue;
+        }
+        
+        final shiftStart = DateTime(day.year, day.month, day.day, startHour, startMinute);
+        final shiftEnd = shiftStart.add(Duration(hours: defaultHours));
+        
+        newShifts.add(Shift(
+          employeeId: employee.id!,
+          startTime: shiftStart,
+          endTime: shiftEnd,
+          label: template.templateName,
+        ));
+        shiftsCreated++;
+      }
+    }
+    
+    if (newShifts.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No shifts were created (all slots already filled or no matching templates)')),
+        );
+      }
+      return;
+    }
+    
+    // Insert all shifts
+    await _shiftDao.insertAll(newShifts);
+    await _refreshShifts();
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Created $shiftsCreated shift(s) from templates')),
+      );
+    }
   }
 
   @override
@@ -608,6 +808,17 @@ class _ScheduleViewState extends State<ScheduleView> {
             tooltip: 'More Options',
             onSelected: (value) => _handleWeekAction(value),
             itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'autoFillFromTemplates',
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_fix_high, size: 20, color: Colors.green),
+                    SizedBox(width: 8),
+                    Text('Auto-Fill from Templates'),
+                  ],
+                ),
+              ),
+              const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'copyWeekToNext',
                 child: Row(
