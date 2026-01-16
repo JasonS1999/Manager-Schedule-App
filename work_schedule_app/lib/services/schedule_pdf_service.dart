@@ -91,33 +91,37 @@ class SchedulePdfService {
 
     final sortedEmployees = _sortEmployees(employees, jobCodeSettings);
 
+    // Attempt to fit everything onto a single portrait page
     pdf.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.letter.landscape,
-        margin: const pw.EdgeInsets.all(20),
-        header: (context) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: [
-            pw.Text(
-              monthTitle,
-              style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
-            ),
-            pw.SizedBox(height: 4),
-            pw.Text(
-              'Generated: ${_formatDateTime(DateTime.now())}',
-              style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700),
-            ),
-            pw.SizedBox(height: 10),
-          ],
-        ),
-        build: (context) => [
-          _buildMonthlyStackedWeeks(
-            employees: sortedEmployees,
-            weeks: weeks,
-            targetMonth: month,
-            shifts: shifts,
-          ),
-        ],
+      pw.Page(
+        pageFormat: PdfPageFormat.letter,
+        margin: const pw.EdgeInsets.all(12),
+        build: (context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(
+                monthTitle,
+                style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+              ),
+              pw.SizedBox(height: 6),
+              pw.Expanded(
+                child: pw.Center(
+                  child: pw.FittedBox(
+                    fit: pw.BoxFit.scaleDown,
+                    alignment: pw.Alignment.topLeft,
+                    child: _buildMonthlyStackedWeeks(
+                      employees: sortedEmployees,
+                      weeks: weeks,
+                      targetMonth: month,
+                      shifts: shifts,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
 
@@ -173,15 +177,6 @@ class SchedulePdfService {
       final hasAnyTargetMonthDay = week.any((d) => d.month == targetMonth);
       if (!hasAnyTargetMonthDay) continue;
 
-      final weekStart = week.first;
-      final weekEnd = week.last;
-      children.add(
-        pw.Text(
-          '${_formatDate(weekStart)} - ${_formatDate(weekEnd)}',
-          style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
-        ),
-      );
-      children.add(pw.SizedBox(height: 4));
       children.add(
         _buildWeekTable(
           employees: employees,
@@ -190,7 +185,7 @@ class SchedulePdfService {
           shifts: shifts,
         ),
       );
-      children.add(pw.SizedBox(height: 12));
+      children.add(pw.SizedBox(height: 8));
     }
 
     return pw.Column(children: children);
@@ -204,13 +199,13 @@ class SchedulePdfService {
   }) {
     final dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THUR', 'FRI', 'SAT'];
 
-    final headerStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 7);
-    final cellStyle = const pw.TextStyle(fontSize: 7);
+    final headerStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 6);
+    final cellStyle = const pw.TextStyle(fontSize: 6);
 
     final colWidths = <int, pw.TableColumnWidth>{
-      0: const pw.FixedColumnWidth(80), // Name
-      1: const pw.FixedColumnWidth(90), // Position (job code)
-      9: const pw.FixedColumnWidth(28), // HRS
+      0: const pw.FixedColumnWidth(70), // Name
+      1: const pw.FixedColumnWidth(70), // Position (job code)
+      9: const pw.FixedColumnWidth(24), // HRS
     };
     // Day columns
     for (int i = 0; i < 7; i++) {
@@ -279,7 +274,7 @@ class SchedulePdfService {
 
     return pw.Table(
       columnWidths: colWidths,
-      border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),
+      border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.4),
       defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
       children: rows,
     );
@@ -292,7 +287,7 @@ class SchedulePdfService {
   }) {
     return pw.Container(
       alignment: align,
-      padding: const pw.EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+      padding: const pw.EdgeInsets.symmetric(horizontal: 2, vertical: 1),
       color: bgColor,
       child: child,
     );
