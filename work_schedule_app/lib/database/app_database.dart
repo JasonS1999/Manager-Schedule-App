@@ -40,6 +40,9 @@ Future<void> _onCreate(Database db, int version) async {
       timeOffType TEXT NOT NULL,
       hours INTEGER NOT NULL,
       vacationGroupId TEXT,
+      isAllDay INTEGER NOT NULL DEFAULT 1,
+      startTime TEXT,
+      endTime TEXT,
       FOREIGN KEY(employeeId) REFERENCES employees(id)
     )
   ''');
@@ -156,7 +159,7 @@ class AppDatabase {
 
     _db = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: _onCreate,
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -228,6 +231,12 @@ class AppDatabase {
             CREATE INDEX IF NOT EXISTS idx_schedule_notes_date 
             ON schedule_notes(date)
           ''');
+        }
+        if (oldVersion < 7) {
+          // Add time range columns to time_off table for partial day time off
+          await db.execute('ALTER TABLE time_off ADD COLUMN isAllDay INTEGER NOT NULL DEFAULT 1');
+          await db.execute('ALTER TABLE time_off ADD COLUMN startTime TEXT');
+          await db.execute('ALTER TABLE time_off ADD COLUMN endTime TEXT');
         }
       },
     );

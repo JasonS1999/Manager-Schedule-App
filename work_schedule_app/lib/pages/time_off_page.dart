@@ -380,8 +380,14 @@ class _TimeOffPageState extends State<TimeOffPage> {
         await _timeOffDao.insertTimeOff(entry);
       }
     } else if (type == 'sick') {
-      // Full-day requested (sick/requested)
-      final hours = _settings?.ptoHoursPerRequest ?? 8;
+      // Sick/requested time off - can be full day or partial
+      final timeRange = await _selectTimeRange();
+      if (timeRange == null) return;
+      
+      final isAllDay = timeRange['isAllDay'] as bool;
+      final hours = timeRange['hours'] as int;
+      final startTimeStr = isAllDay ? null : timeRange['startTime'] as String;
+      final endTimeStr = isAllDay ? null : timeRange['endTime'] as String;
 
       // Check for overlap (single-day) and show details
       final conflicts = await _timeOffDao.getTimeOffInRange(employee.id!, day, day);
@@ -399,7 +405,7 @@ class _TimeOffPageState extends State<TimeOffPage> {
                   child: SingleChildScrollView(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      children: conflicts.map((c) => Text('${c.date.toIso8601String().split('T').first} — ${c.timeOffType.toUpperCase()}')).toList(),
+                      children: conflicts.map((c) => Text('${c.date.toIso8601String().split('T').first} — ${c.timeOffType.toUpperCase()} (${c.timeRangeDisplay})')).toList(),
                     ),
                   ),
                 ),
@@ -428,7 +434,7 @@ class _TimeOffPageState extends State<TimeOffPage> {
                     children: [
                       const Text('This employee already has time off on this date:'),
                       const SizedBox(height: 8),
-                      ...conflicts.map((c) => Text('${c.date.toIso8601String().split('T').first} — ${c.timeOffType.toUpperCase()}')),
+                      ...conflicts.map((c) => Text('${c.date.toIso8601String().split('T').first} — ${c.timeOffType.toUpperCase()} (${c.timeRangeDisplay})')),
                     ],
                   ),
                 ),
@@ -450,6 +456,9 @@ class _TimeOffPageState extends State<TimeOffPage> {
         timeOffType: type,
         hours: hours,
         vacationGroupId: null,
+        isAllDay: isAllDay,
+        startTime: startTimeStr,
+        endTime: endTimeStr,
       );
 
       await _timeOffDao.insertTimeOff(entry);
@@ -583,6 +592,130 @@ class _TimeOffPageState extends State<TimeOffPage> {
               child: const Text('OK'),
             ),
           ],
+        );
+      },
+    );
+  }
+
+  /// Shows a dialog to select time range for partial day time off
+  /// Returns a map with 'isAllDay', 'startTime', 'endTime', and 'hours'
+  Future<Map<String, dynamic>?> _selectTimeRange() async {
+    bool isAllDay = true;
+    TimeOfDay startTime = const TimeOfDay(hour: 9, minute: 0);
+    TimeOfDay endTime = const TimeOfDay(hour: 17, minute: 0);
+    final defaultHours = _settings?.ptoHoursPerRequest ?? 8;
+
+    if (!mounted) return null;
+    return showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            // Calculate hours from time range
+            int calculatedHours = defaultHours;
+            if (!isAllDay) {
+              final startMinutes = startTime.hour * 60 + startTime.minute;
+              final endMinutes = endTime.hour * 60 + endTime.minute;
+              calculatedHours = ((endMinutes - startMinutes) / 60).round().clamp(1, 24);
+            }
+
+            String formatTime(TimeOfDay t) {
+              final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
+              final mm = t.minute.toString().padLeft(2, '0');
+              final suffix = t.period == DayPeriod.am ? 'AM' : 'PM';
+              return '$h:$mm $suffix';
+            }
+
+            return AlertDialog(
+              title: const Text('Time Off Duration'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CheckboxListTile(
+                    title: const Text('All Day'),
+                    value: isAllDay,
+                    contentPadding: EdgeInsets.zero,
+                    onChanged: (value) {
+                      setDialogState(() {
+                        isAllDay = value ?? true;
+                      });
+                    },
+                  ),
+                  if (!isAllDay) ...[
+                    const SizedBox(height: 8),
+                    const Text('Unavailable from:', style: TextStyle(fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final picked = await showTimePicker(
+                                context: context,
+                                initialTime: startTime,
+                              );
+                              if (picked != null) {
+                                setDialogState(() {
+                                  startTime = picked;
+                                  // Ensure end time is after start time
+                                  if (picked.hour * 60 + picked.minute >= endTime.hour * 60 + endTime.minute) {
+                                    endTime = TimeOfDay(hour: (picked.hour + 1) % 24, minute: picked.minute);
+                                  }
+                                });
+                              }
+                            },
+                            child: Text(formatTime(startTime)),
+                          ),
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8),
+                          child: Text('to'),
+                        ),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final picked = await showTimePicker(
+                                context: context,
+                                initialTime: endTime,
+                              );
+                              if (picked != null) {
+                                setDialogState(() {
+                                  endTime = picked;
+                                });
+                              }
+                            },
+                            child: Text(formatTime(endTime)),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text('Hours: $calculatedHours', style: const TextStyle(color: Colors.grey)),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final startStr = '${startTime.hour.toString().padLeft(2, '0')}:${startTime.minute.toString().padLeft(2, '0')}';
+                    final endStr = '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}';
+                    Navigator.pop(context, {
+                      'isAllDay': isAllDay,
+                      'startTime': startStr,
+                      'endTime': endStr,
+                      'hours': isAllDay ? defaultHours : calculatedHours,
+                    });
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
         );
       },
     );

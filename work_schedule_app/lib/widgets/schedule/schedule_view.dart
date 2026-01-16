@@ -819,7 +819,7 @@ class _ScheduleViewState extends State<ScheduleView> {
                 const SizedBox(width: 8),
                 Text(
                   _mode == ScheduleMode.monthly
-                      ? "${_monthName(_date.month)} ${_date.year} (Monthly view disabled)"
+                      ? "${_monthName(_date.month)} ${_date.year}"
                       : _mode == ScheduleMode.weekly
                           ? "Week of ${_date.month}/${_date.day}/${_date.year}"
                           : "${_dayOfWeekAbbr(_date)}, ${_monthName(_date.month)} ${_date.day}, ${_date.year}",
@@ -2179,13 +2179,26 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
     // Priority 1: Check time-off first
     final timeOffList = await _timeOffDao.getAllTimeOff();
     final dateStr = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-    final hasTimeOff = timeOffList.any((t) => 
-      t.employeeId == employeeId &&
-      '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}' == dateStr
+    final timeOffEntry = timeOffList.cast<TimeOffEntry?>().firstWhere(
+      (t) => t != null &&
+        t.employeeId == employeeId &&
+        '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}' == dateStr,
+      orElse: () => null,
     );
     
-    if (hasTimeOff) {
-      final result = {'available': false, 'reason': 'Time off scheduled', 'type': 'time-off'};
+    if (timeOffEntry != null) {
+      final timeRange = timeOffEntry.isAllDay 
+          ? 'All Day' 
+          : '${timeOffEntry.startTime ?? ''} - ${timeOffEntry.endTime ?? ''}';
+      final result = {
+        'available': false, 
+        'reason': 'Time off scheduled ($timeRange)', 
+        'type': 'time-off',
+        'isAllDay': timeOffEntry.isAllDay,
+        'startTime': timeOffEntry.startTime,
+        'endTime': timeOffEntry.endTime,
+        'timeOffEntry': timeOffEntry,
+      };
       _availabilityCache[cacheKey] = result;
       return result;
     }
@@ -2384,13 +2397,26 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     // Priority 1: Check time-off first
     final timeOffList = await _timeOffDao.getAllTimeOff();
     final dateStr = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-    final hasTimeOff = timeOffList.any((t) => 
-      t.employeeId == employeeId &&
-      '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}' == dateStr
+    final timeOffEntry = timeOffList.cast<TimeOffEntry?>().firstWhere(
+      (t) => t != null &&
+        t.employeeId == employeeId &&
+        '${t.date.year}-${t.date.month.toString().padLeft(2, '0')}-${t.date.day.toString().padLeft(2, '0')}' == dateStr,
+      orElse: () => null,
     );
     
-    if (hasTimeOff) {
-      final result = {'available': false, 'reason': 'Time off scheduled', 'type': 'time-off'};
+    if (timeOffEntry != null) {
+      final timeRange = timeOffEntry.isAllDay 
+          ? 'All Day' 
+          : '${timeOffEntry.startTime ?? ''} - ${timeOffEntry.endTime ?? ''}';
+      final result = {
+        'available': false, 
+        'reason': 'Time off scheduled ($timeRange)', 
+        'type': 'time-off',
+        'isAllDay': timeOffEntry.isAllDay,
+        'startTime': timeOffEntry.startTime,
+        'endTime': timeOffEntry.endTime,
+        'timeOffEntry': timeOffEntry,
+      };
       _availabilityCache[cacheKey] = result;
       return result;
     }

@@ -5,6 +5,9 @@ class TimeOffEntry {
   final String timeOffType; // pto / vac / sick
   final int hours;
   final String? vacationGroupId;
+  final bool isAllDay; // true = all day, false = specific time range
+  final String? startTime; // format: "HH:mm" (e.g., "09:00")
+  final String? endTime;   // format: "HH:mm" (e.g., "17:00")
 
   TimeOffEntry({
     required this.id,
@@ -13,6 +16,9 @@ class TimeOffEntry {
     required this.timeOffType,
     required this.hours,
     this.vacationGroupId,
+    this.isAllDay = true,
+    this.startTime,
+    this.endTime,
   });
 
   Map<String, dynamic> toMap() {
@@ -23,6 +29,9 @@ class TimeOffEntry {
       'timeOffType': timeOffType,
       'hours': hours,
       'vacationGroupId': vacationGroupId,
+      'isAllDay': isAllDay ? 1 : 0,
+      'startTime': startTime,
+      'endTime': endTime,
     };
   }
 
@@ -34,6 +43,54 @@ class TimeOffEntry {
       timeOffType: map['timeOffType'],
       hours: map['hours'] ?? 0,
       vacationGroupId: map['vacationGroupId'],
+      isAllDay: (map['isAllDay'] ?? 1) == 1,
+      startTime: map['startTime'],
+      endTime: map['endTime'],
     );
+  }
+
+  /// Returns a human-readable time range string
+  String get timeRangeDisplay {
+    if (isAllDay) return 'All Day';
+    if (startTime == null || endTime == null) return 'All Day';
+    return '$startTime - $endTime';
+  }
+
+  /// Check if a given time falls within this time off entry
+  bool coversTime(int hour, int minute) {
+    if (isAllDay) return true;
+    if (startTime == null || endTime == null) return true;
+    
+    final checkTime = hour * 60 + minute;
+    final startParts = startTime!.split(':');
+    final endParts = endTime!.split(':');
+    final startMinutes = int.parse(startParts[0]) * 60 + int.parse(startParts[1]);
+    final endMinutes = int.parse(endParts[0]) * 60 + int.parse(endParts[1]);
+    
+    return checkTime >= startMinutes && checkTime < endMinutes;
+  }
+
+  /// Check if this time off overlaps with a shift time range
+  bool overlapsWithShift(DateTime shiftStart, DateTime shiftEnd) {
+    // Check if same day
+    if (date.year != shiftStart.year || 
+        date.month != shiftStart.month || 
+        date.day != shiftStart.day) {
+      return false;
+    }
+    
+    if (isAllDay) return true;
+    if (startTime == null || endTime == null) return true;
+    
+    final startParts = startTime!.split(':');
+    final endParts = endTime!.split(':');
+    final timeOffStart = int.parse(startParts[0]) * 60 + int.parse(startParts[1]);
+    final timeOffEnd = int.parse(endParts[0]) * 60 + int.parse(endParts[1]);
+    
+    final shiftStartMinutes = shiftStart.hour * 60 + shiftStart.minute;
+    final shiftEndMinutes = shiftEnd.hour * 60 + shiftEnd.minute;
+    
+    // Check for overlap
+    return timeOffStart < shiftEndMinutes && timeOffEnd > shiftStartMinutes;
   }
 }
