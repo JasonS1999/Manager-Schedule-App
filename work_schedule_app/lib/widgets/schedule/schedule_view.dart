@@ -1122,16 +1122,69 @@ class _ScheduleViewState extends State<ScheduleView> {
       date: _date,
       employees: _filteredEmployees,
       shifts: _shifts,
+      notes: _notes,
+      clipboardAvailable: _clipboard != null,
+      onCopyShift: (s) {
+        setState(() {
+          _clipboard = {'start': TimeOfDay(hour: s.start.hour, minute: s.start.minute), 'duration': s.end.difference(s.start), 'text': s.text};
+        });
+      },
+      onSaveNote: (day, note) async {
+        final scheduleNote = ScheduleNote(date: day, note: note);
+        await _noteDao.upsert(scheduleNote);
+        await _refreshShifts();
+      },
+      onDeleteNote: (day) async {
+        await _noteDao.deleteByDate(day);
+        await _refreshShifts();
+      },
+      onPasteTarget: (day, employeeId) async {
+        if (_clipboard == null) return;
+        final tod = _clipboard!['start'] as TimeOfDay;
+        final dur = _clipboard!['duration'] as Duration;
+        DateTime start = DateTime(day.year, day.month, day.day, tod.hour, tod.minute);
+        if (tod.hour == 0 || tod.hour == 1) start = start.add(const Duration(days: 1));
+        final end = start.add(dur);
+        
+        final hasConflict = await _shiftDao.hasConflict(employeeId, start, end);
+        if (hasConflict && mounted) {
+          final proceed = await _showConflictWarning(context, employeeId, start, end);
+          if (!proceed) return;
+        }
+        
+        final shift = Shift(
+          employeeId: employeeId,
+          startTime: start,
+          endTime: end,
+          label: _clipboard!['text'] as String,
+        );
+        await _insertShiftWithUndo(shift);
+        _clipboard = null;
+        await _refreshShifts();
+      },
       onUpdateShift: (oldShift, newStart, newEnd) async {
         if (newStart == newEnd) {
-          // Delete
+          // Delete with undo
           if (oldShift.id != null) {
-            await _shiftDao.delete(oldShift.id!);
+            final shiftToDelete = Shift(
+              id: oldShift.id,
+              employeeId: oldShift.employeeId,
+              startTime: oldShift.start,
+              endTime: oldShift.end,
+              label: oldShift.text,
+            );
+            await _deleteShiftWithUndo(shiftToDelete);
           }
         } else {
-          // Update or add
+          // Update or add with undo
           if (oldShift.id != null) {
-            // Update existing
+            final oldShiftModel = Shift(
+              id: oldShift.id,
+              employeeId: oldShift.employeeId,
+              startTime: oldShift.start,
+              endTime: oldShift.end,
+              label: oldShift.text,
+            );
             final updated = Shift(
               id: oldShift.id,
               employeeId: oldShift.employeeId,
@@ -1139,17 +1192,54 @@ class _ScheduleViewState extends State<ScheduleView> {
               endTime: newEnd,
               label: oldShift.text,
             );
-            await _shiftDao.update(updated);
+            await _updateShiftWithUndo(oldShiftModel, updated);
           } else {
-            // Insert new
             final newShift = Shift(
               employeeId: oldShift.employeeId,
               startTime: newStart,
               endTime: newEnd,
               label: oldShift.text,
             );
-            await _shiftDao.insert(newShift);
+            await _insertShiftWithUndo(newShift);
           }
+        }
+        await _refreshShifts();
+      },
+      onMoveShift: (shift, newDay, newEmployeeId) async {
+        final duration = shift.end.difference(shift.start);
+        final newStart = DateTime(newDay.year, newDay.month, newDay.day, shift.start.hour, shift.start.minute);
+        final newEnd = newStart.add(duration);
+        
+        final hasConflict = await _shiftDao.hasConflict(newEmployeeId, newStart, newEnd, excludeId: shift.id);
+        if (hasConflict && mounted) {
+          final proceed = await _showConflictWarning(context, newEmployeeId, newStart, newEnd, excludeId: shift.id);
+          if (!proceed) return;
+        }
+        
+        if (shift.id != null) {
+          final oldShiftModel = Shift(
+            id: shift.id,
+            employeeId: shift.employeeId,
+            startTime: shift.start,
+            endTime: shift.end,
+            label: shift.text,
+          );
+          final updated = Shift(
+            id: shift.id,
+            employeeId: newEmployeeId,
+            startTime: newStart,
+            endTime: newEnd,
+            label: shift.text,
+          );
+          await _moveShiftWithUndo(oldShiftModel, updated);
+        } else {
+          final newShift = Shift(
+            employeeId: newEmployeeId,
+            startTime: newStart,
+            endTime: newEnd,
+            label: shift.text,
+          );
+          await _insertShiftWithUndo(newShift);
         }
         await _refreshShifts();
       },
@@ -2229,14 +2319,28 @@ class MonthlyScheduleView extends StatefulWidget {
   final DateTime date;
   final List<Employee> employees;
   final List<ShiftPlaceholder> shifts;
+  final Map<DateTime, ScheduleNote> notes;
   final void Function(ShiftPlaceholder oldShift, DateTime newStart, DateTime newEnd)? onUpdateShift;
+  final void Function(ShiftPlaceholder shift)? onCopyShift;
+  final void Function(DateTime day, int employeeId)? onPasteTarget;
+  final void Function(ShiftPlaceholder shift, DateTime newDay, int newEmployeeId)? onMoveShift;
+  final void Function(DateTime day, String note)? onSaveNote;
+  final void Function(DateTime day)? onDeleteNote;
+  final bool clipboardAvailable;
 
   const MonthlyScheduleView({
     super.key,
     required this.date,
     required this.employees,
     this.shifts = const [],
+    this.notes = const {},
     this.onUpdateShift,
+    this.onCopyShift,
+    this.onPasteTarget,
+    this.onMoveShift,
+    this.onSaveNote,
+    this.onDeleteNote,
+    this.clipboardAvailable = false,
   });
 
   @override
@@ -2245,6 +2349,9 @@ class MonthlyScheduleView extends StatefulWidget {
 
 class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
   ShiftPlaceholder? _selectedShift;
+  // Drag & drop state
+  DateTime? _dragHoverDay;
+  int? _dragHoverEmployeeId;
   final ShiftTemplateDao _shiftTemplateDao = ShiftTemplateDao();
   final JobCodeSettingsDao _jobCodeDao = JobCodeSettingsDao();
   final TimeOffDao _timeOffDao = TimeOffDao();
@@ -2294,6 +2401,85 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     return result;
   }
 
+  bool _hasNoteForDay(DateTime day) {
+    final normalizedDay = DateTime(day.year, day.month, day.day);
+    return widget.notes.containsKey(normalizedDay);
+  }
+
+  String _getNoteForDay(DateTime day) {
+    final normalizedDay = DateTime(day.year, day.month, day.day);
+    return widget.notes[normalizedDay]?.note ?? '';
+  }
+
+  Future<void> _showNoteDialog(BuildContext context, DateTime day) async {
+    final normalizedDay = DateTime(day.year, day.month, day.day);
+    final existingNote = widget.notes[normalizedDay];
+    final controller = TextEditingController(text: existingNote?.note ?? '');
+
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Note for ${day.month}/${day.day}'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: 'Enter note (leave empty to delete)',
+            border: OutlineInputBorder(),
+          ),
+          maxLines: 3,
+          autofocus: true,
+        ),
+        actions: [
+          if (existingNote != null)
+            TextButton(
+              onPressed: () {
+                widget.onDeleteNote?.call(normalizedDay);
+                Navigator.pop(ctx);
+              },
+              child: const Text('Delete', style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      widget.onSaveNote?.call(normalizedDay, result);
+    }
+  }
+
+  void _showEmptyCellContextMenu(BuildContext context, DateTime day, int employeeId, Offset position) async {
+    final result = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy),
+      items: [
+        const PopupMenuItem(value: 'add', child: Text('Add Shift')),
+        if (widget.clipboardAvailable)
+          const PopupMenuItem(value: 'paste', child: Text('Paste Shift')),
+      ],
+    );
+
+    if (!mounted || !context.mounted) return;
+
+    if (result == 'add') {
+      _showEditDialog(context, ShiftPlaceholder(
+        employeeId: employeeId,
+        start: DateTime(day.year, day.month, day.day, 9, 0),
+        end: DateTime(day.year, day.month, day.day, 17, 0),
+        text: '',
+      ));
+    } else if (result == 'paste') {
+      widget.onPasteTarget?.call(day, employeeId);
+    }
+  }
+
   List<List<DateTime?>> _buildCalendarWeeks() {
     // Get first and last day of month
     final firstDayOfMonth = DateTime(widget.date.year, widget.date.month, 1);
@@ -2336,9 +2522,10 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
       position: position != null 
         ? RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy)
         : const RelativeRect.fromLTRB(100, 100, 100, 100),
-      items: const [
-        PopupMenuItem(value: 'edit', child: Text('Edit Shift')),
-        PopupMenuItem(value: 'delete', child: Text('Delete Shift')),
+      items: [
+        const PopupMenuItem(value: 'edit', child: Text('Edit Shift')),
+        const PopupMenuItem(value: 'copy', child: Text('Copy Shift')),
+        const PopupMenuItem(value: 'delete', child: Text('Delete Shift')),
       ],
     );
 
@@ -2346,6 +2533,11 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
 
     if (result == 'edit') {
       _showEditDialog(context, shift);
+    } else if (result == 'copy') {
+      widget.onCopyShift?.call(shift);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Shift copied'), duration: Duration(seconds: 1)),
+      );
     } else if (result == 'delete') {
       if (widget.onUpdateShift != null) {
         widget.onUpdateShift!(shift, shift.start, shift.start);
@@ -2566,6 +2758,63 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     return result;
   }
 
+  Widget _buildShiftChip(ShiftPlaceholder shift, bool isSelected, String startLabel, String endLabel, BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      decoration: BoxDecoration(
+        color: isSelected 
+            ? Colors.blue.withAlpha(128)
+            : Theme.of(context).colorScheme.primaryContainer.withAlpha(128),
+        borderRadius: BorderRadius.circular(4),
+        border: isSelected 
+            ? Border.all(color: Colors.blue, width: 2)
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          if (_isLabelOnly(shift.text))
+            Text(
+              _labelText(shift.text),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: Colors.red[700],
+              ),
+              textAlign: TextAlign.center,
+            )
+          else ...[
+            Text(
+              '$startLabel-',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            Text(
+              endLabel,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            if (shift.text.isNotEmpty)
+              Text(
+                shift.text,
+                style: const TextStyle(fontSize: 9),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final weeks = _buildCalendarWeeks();
@@ -2676,8 +2925,10 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  // Day label column
-                                  Container(
+                                  // Day label column with notes
+                                  GestureDetector(
+                                    onTap: () => _showNoteDialog(context, day),
+                                    child: Container(
                                     width: dayColumnWidth,
                                     padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
@@ -2692,12 +2943,19 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      Text(
-                                        dayName,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 14,
-                                        ),
+                                      Row(
+                                        children: [
+                                          Text(
+                                            dayName,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                          const Spacer(),
+                                          if (_hasNoteForDay(day))
+                                            const Icon(Icons.note, size: 14, color: Colors.amber),
+                                        ],
                                       ),
                                       Text(
                                         '${day.month}/${day.day}',
@@ -2712,9 +2970,17 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                                   : null,
                                         ),
                                       ),
+                                      if (_hasNoteForDay(day))
+                                        Text(
+                                          _getNoteForDay(day),
+                                          style: const TextStyle(fontSize: 9, color: Colors.amber),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
                                     ],
                                   ),
                                 ),
+                                  ),
                                 // Employee cells for this day
                                 ...widget.employees.map((employee) {
                                   final shiftsForCell = widget.shifts.where((s) {
@@ -2722,116 +2988,119 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                       s.start.year == day.year &&
                                       s.start.month == day.month &&
                                       s.start.day == day.day;
-                                    if (match) {
-                                      debugPrint('Found shift for ${employee.name} on ${day.month}/${day.day}: ${s.text}');
-                                    }
                                     return match;
                                   }).toList();
 
-                                  return GestureDetector(
-                                    onTap: shiftsForCell.isEmpty ? () {
-                                      // Empty cell - show add shift dialog
-                                      _showEditDialog(context, ShiftPlaceholder(
-                                        employeeId: employee.id!,
-                                        start: DateTime(day.year, day.month, day.day, 9, 0),
-                                        end: DateTime(day.year, day.month, day.day, 17, 0),
-                                        text: '',
-                                      ));
-                                    } : null,
-                                    child: Container(
-                                      width: cellWidth,
-                                      padding: const EdgeInsets.all(6),
-                                      decoration: BoxDecoration(
-                                        border: Border(left: BorderSide(color: Theme.of(context).dividerColor)),
-                                        color: !isCurrentMonth
-                                            ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(25)
-                                            : isWeekend
-                                                ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(51)
-                                                : null,
-                                      ),
-                                      child: shiftsForCell.isEmpty
-                                          ? const SizedBox.shrink() // Empty cell shows nothing
-                                          : Column(
-                                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: shiftsForCell.map((shift) {
-                                              final isSelected = _selectedShift == shift;
-                                              final startLabel = _formatTimeOfDay(TimeOfDay(hour: shift.start.hour, minute: shift.start.minute));
-                                              final endLabel = _formatTimeOfDay(TimeOfDay(hour: shift.end.hour, minute: shift.end.minute));
+                                  final isDragHover = _dragHoverDay?.year == day.year &&
+                                      _dragHoverDay?.month == day.month &&
+                                      _dragHoverDay?.day == day.day &&
+                                      _dragHoverEmployeeId == employee.id;
 
-                                              return GestureDetector(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _selectedShift = isSelected ? null : shift;
-                                                  });
-                                                },
-                                                onDoubleTap: () {
-                                                  _showEditDialog(context, shift);
-                                                },
-                                                onSecondaryTapDown: (details) {
-                                                  setState(() {
-                                                    _selectedShift = shift;
-                                                  });
-                                                  _showShiftContextMenu(context, shift, details.globalPosition);
-                                                },
-                                                child: Container(
-                                                  margin: const EdgeInsets.only(bottom: 3),
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                                  decoration: BoxDecoration(
-                                                    color: isSelected 
-                                                        ? Colors.blue.withAlpha(128)
-                                                        : Theme.of(context).colorScheme.primaryContainer.withAlpha(128),
-                                                    borderRadius: BorderRadius.circular(4),
-                                                    border: isSelected 
-                                                        ? Border.all(color: Colors.blue, width: 2)
+                                  // Wrap in DragTarget for drop support
+                                  return DragTarget<ShiftPlaceholder>(
+                                    onWillAcceptWithDetails: (details) {
+                                      setState(() {
+                                        _dragHoverDay = day;
+                                        _dragHoverEmployeeId = employee.id;
+                                      });
+                                      return true;
+                                    },
+                                    onLeave: (_) {
+                                      setState(() {
+                                        _dragHoverDay = null;
+                                        _dragHoverEmployeeId = null;
+                                      });
+                                    },
+                                    onAcceptWithDetails: (details) {
+                                      setState(() {
+                                        _dragHoverDay = null;
+                                        _dragHoverEmployeeId = null;
+                                      });
+                                      widget.onMoveShift?.call(details.data, day, employee.id!);
+                                    },
+                                    builder: (context, candidateData, rejectedData) {
+                                      return GestureDetector(
+                                        onTap: shiftsForCell.isEmpty ? () {
+                                          _showEditDialog(context, ShiftPlaceholder(
+                                            employeeId: employee.id!,
+                                            start: DateTime(day.year, day.month, day.day, 9, 0),
+                                            end: DateTime(day.year, day.month, day.day, 17, 0),
+                                            text: '',
+                                          ));
+                                        } : null,
+                                        onSecondaryTapDown: shiftsForCell.isEmpty ? (details) {
+                                          _showEmptyCellContextMenu(context, day, employee.id!, details.globalPosition);
+                                        } : null,
+                                        child: Container(
+                                          width: cellWidth,
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            border: Border(left: BorderSide(color: Theme.of(context).dividerColor)),
+                                            color: isDragHover
+                                                ? Colors.blue.withAlpha(50)
+                                                : !isCurrentMonth
+                                                    ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(25)
+                                                    : isWeekend
+                                                        ? Theme.of(context).colorScheme.surfaceContainerHighest.withAlpha(51)
                                                         : null,
-                                                  ),
-                                                  child: Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                                    children: [
-                                                      if (_isLabelOnly(shift.text))
-                                                        Text(
-                                                          _labelText(shift.text),
-                                                          style: TextStyle(
-                                                            fontSize: 11,
-                                                            fontWeight: FontWeight.bold,
-                                                            color: Colors.red[700],
-                                                          ),
-                                                          textAlign: TextAlign.center,
-                                                        )
-                                                      else ...[
-                                                        Text(
-                                                          '$startLabel-',
-                                                          style: const TextStyle(
-                                                            fontSize: 10,
-                                                            fontWeight: FontWeight.w600,
-                                                          ),
-                                                          textAlign: TextAlign.center,
-                                                        ),
-                                                        Text(
-                                                          endLabel,
-                                                          style: const TextStyle(
-                                                            fontSize: 10,
-                                                            fontWeight: FontWeight.w600,
-                                                          ),
-                                                          textAlign: TextAlign.center,
-                                                        ),
-                                                        if (shift.text.isNotEmpty)
-                                                          Text(
-                                                            shift.text,
-                                                            style: const TextStyle(fontSize: 9),
-                                                            maxLines: 1,
-                                                            overflow: TextOverflow.ellipsis,
-                                                            textAlign: TextAlign.center,
-                                                          ),
-                                                      ],
-                                                    ],
-                                                  ),
-                                                ),
-                                              );
-                                            }).toList(),
                                           ),
-                                    ),
+                                          child: shiftsForCell.isEmpty
+                                              ? (isDragHover 
+                                                  ? const Center(child: Icon(Icons.add, color: Colors.blue, size: 20))
+                                                  : const SizedBox.shrink())
+                                              : Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: shiftsForCell.map((shift) {
+                                                    final isSelected = _selectedShift == shift;
+                                                    final startLabel = _formatTimeOfDay(TimeOfDay(hour: shift.start.hour, minute: shift.start.minute));
+                                                    final endLabel = _formatTimeOfDay(TimeOfDay(hour: shift.end.hour, minute: shift.end.minute));
+
+                                                    // Wrap shift in Draggable
+                                                    return Draggable<ShiftPlaceholder>(
+                                                      data: shift,
+                                                      feedback: Material(
+                                                        elevation: 4,
+                                                        borderRadius: BorderRadius.circular(4),
+                                                        child: Container(
+                                                          padding: const EdgeInsets.all(8),
+                                                          decoration: BoxDecoration(
+                                                            color: Colors.blue.withAlpha(200),
+                                                            borderRadius: BorderRadius.circular(4),
+                                                          ),
+                                                          child: Text(
+                                                            _isLabelOnly(shift.text) ? _labelText(shift.text) : '$startLabel-$endLabel',
+                                                            style: const TextStyle(color: Colors.white, fontSize: 10),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      childWhenDragging: Opacity(
+                                                        opacity: 0.3,
+                                                        child: _buildShiftChip(shift, isSelected, startLabel, endLabel, context),
+                                                      ),
+                                                      child: GestureDetector(
+                                                        onTap: () {
+                                                          setState(() {
+                                                            _selectedShift = isSelected ? null : shift;
+                                                          });
+                                                        },
+                                                        onDoubleTap: () {
+                                                          _showEditDialog(context, shift);
+                                                        },
+                                                        onSecondaryTapDown: (details) {
+                                                          setState(() {
+                                                            _selectedShift = shift;
+                                                          });
+                                                          _showShiftContextMenu(context, shift, details.globalPosition);
+                                                        },
+                                                        child: _buildShiftChip(shift, isSelected, startLabel, endLabel, context),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                                ),
+                                        ),
+                                      );
+                                    },
                                   );
                                 }),
                               ],
