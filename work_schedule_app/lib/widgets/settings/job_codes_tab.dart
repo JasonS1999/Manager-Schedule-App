@@ -15,11 +15,6 @@ class _JobCodesTabState extends State<JobCodesTab> {
   List<JobCodeSettings> _codes = [];
   bool _orderDirty = false;
 
-  String _formatHours(double hours) {
-    if (hours % 1 == 0) return hours.toInt().toString();
-    return hours.toString();
-  }
-
   Future<void> _deleteJobCode(JobCodeSettings codeToDelete) async {
     final usage = await _dao.getUsageCounts(codeToDelete.code);
     final employeeCount = usage['employees'] ?? 0;
@@ -165,7 +160,6 @@ class _JobCodesTabState extends State<JobCodesTab> {
                 final newCode = JobCodeSettings(
                   code: code.trim(),
                   hasPTO: false,
-                  defaultDailyHours: 8.0,
                   maxHoursPerWeek: 40,
                   colorHex: '#4285F4',
                   sortOrder: nextOrder,
@@ -281,7 +275,6 @@ class _JobCodesTabState extends State<JobCodesTab> {
                 title: Text(jc.code),
                 subtitle: Text(
                   "PTO: ${jc.hasPTO ? 'Yes' : 'No'} • "
-                  "Daily: ${_formatHours(jc.defaultDailyHours)}h • "
                   "Max/Week: ${jc.maxHoursPerWeek}h",
                 ),
                 trailing: Row(

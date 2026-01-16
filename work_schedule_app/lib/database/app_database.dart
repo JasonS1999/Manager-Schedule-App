@@ -89,7 +89,8 @@ Future<void> _onCreate(Database db, int version) async {
     CREATE TABLE shift_templates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       templateName TEXT NOT NULL,
-      startTime TEXT NOT NULL
+      startTime TEXT NOT NULL,
+      endTime TEXT NOT NULL DEFAULT '17:00'
     )
   ''');
 
@@ -159,7 +160,7 @@ class AppDatabase {
 
     _db = await openDatabase(
       path,
-      version: 10,
+      version: 11,
       onCreate: _onCreate,
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -271,6 +272,11 @@ class AppDatabase {
 
           await db.execute('ALTER TABLE shift_templates_new RENAME TO shift_templates');
           await db.execute('PRAGMA foreign_keys=ON');
+        }
+
+        if (oldVersion < 11) {
+          // Add endTime column to shift_templates for explicit end times
+          await db.execute("ALTER TABLE shift_templates ADD COLUMN endTime TEXT NOT NULL DEFAULT '17:00'");
         }
       },
     );

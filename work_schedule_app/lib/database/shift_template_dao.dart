@@ -44,9 +44,9 @@ class ShiftTemplateDao {
     final existing = await getAllTemplates();
     if (existing.isNotEmpty) return;
 
-    await insertTemplate(ShiftTemplate(templateName: 'Opener', startTime: '06:00'));
-    await insertTemplate(ShiftTemplate(templateName: 'Lunch', startTime: '10:00'));
-    await insertTemplate(ShiftTemplate(templateName: 'Dinner', startTime: '14:00'));
-    await insertTemplate(ShiftTemplate(templateName: 'Closer', startTime: '18:00'));
+    await insertTemplate(ShiftTemplate(templateName: 'Opener', startTime: '06:00', endTime: '14:00'));
+    await insertTemplate(ShiftTemplate(templateName: 'Lunch', startTime: '10:00', endTime: '18:00'));
+    await insertTemplate(ShiftTemplate(templateName: 'Dinner', startTime: '14:00', endTime: '22:00'));
+    await insertTemplate(ShiftTemplate(templateName: 'Closer', startTime: '18:00', endTime: '01:00'));
   }
 }

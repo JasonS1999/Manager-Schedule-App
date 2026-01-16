@@ -17,7 +17,6 @@ class _JobCodeEditorState extends State<JobCodeEditor> {
 
   List<JobCodeSettings> _allCodes = [];
 
-  late TextEditingController _hoursController;
   late TextEditingController _maxHoursController;
   late TextEditingController _codeController;
   bool _editingCode = false;
@@ -29,9 +28,6 @@ class _JobCodeEditorState extends State<JobCodeEditor> {
 
     _loadAllCodes();
 
-    _hoursController = TextEditingController(
-      text: _formatHours(_settings.defaultDailyHours),
-    );
     _maxHoursController = TextEditingController(
       text: _settings.maxHoursPerWeek.toString(),
     );
@@ -151,20 +147,9 @@ class _JobCodeEditorState extends State<JobCodeEditor> {
 
   @override
   void dispose() {
-    _hoursController.dispose();
     _maxHoursController.dispose();
     _codeController.dispose();
     super.dispose();
-  }
-
-  String _formatHours(double hours) {
-    if (hours % 1 == 0) return hours.toInt().toString();
-    return hours.toString();
-  }
-
-  double _parseHours(String input, double fallback) {
-    final normalized = input.trim().replaceAll(',', '.');
-    return double.tryParse(normalized) ?? fallback;
   }
 
   Color _colorFromHex(String hex) {
@@ -262,7 +247,6 @@ class _JobCodeEditorState extends State<JobCodeEditor> {
                           _settings = JobCodeSettings(
                             code: newCode,
                             hasPTO: _settings.hasPTO,
-                            defaultDailyHours: _settings.defaultDailyHours,
                             maxHoursPerWeek: _settings.maxHoursPerWeek,
                             colorHex: _settings.colorHex,
                           );
@@ -283,20 +267,6 @@ class _JobCodeEditorState extends State<JobCodeEditor> {
               onChanged: (v) {
                 setState(() {
                   _settings = _settings.copyWith(hasPTO: v);
-                });
-              },
-            ),
-
-            // Default Daily Hours
-            TextField(
-              decoration: const InputDecoration(labelText: "Default Daily Hours"),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              controller: _hoursController,
-              onChanged: (v) {
-                setState(() {
-                  _settings = _settings.copyWith(
-                    defaultDailyHours: _parseHours(v, 8.0),
-                  );
                 });
               },
             ),
@@ -362,7 +332,6 @@ class _JobCodeEditorState extends State<JobCodeEditor> {
                     final finalSettings = JobCodeSettings(
                       code: newCode,
                       hasPTO: _settings.hasPTO,
-                      defaultDailyHours: _settings.defaultDailyHours,
                       maxHoursPerWeek: _settings.maxHoursPerWeek,
                       colorHex: _settings.colorHex,
                       sortOrder: _settings.sortOrder,

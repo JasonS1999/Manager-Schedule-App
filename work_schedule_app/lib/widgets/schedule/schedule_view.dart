@@ -534,13 +534,6 @@ class _ScheduleViewState extends State<ScheduleView> {
       return;
     }
 
-    // Get job code settings for default hours
-    final jobCodeSettings = await _jobCodeSettingsDao.getAll();
-    final defaultHoursMap = <String, double>{};
-    for (final setting in jobCodeSettings) {
-      defaultHoursMap[setting.code.toLowerCase()] = setting.defaultDailyHours;
-    }
-
     // Show dialog to select days and options
     if (!mounted) return;
     final result = await showDialog<Map<String, dynamic>>(
@@ -646,19 +639,15 @@ class _ScheduleViewState extends State<ScheduleView> {
       // Templates are shared across job codes; use the first template.
       final template = templates.first;
       
-      // Parse template start time (e.g., "9:00 AM")
-      final startTimeParts = template.startTime.replaceAll(RegExp(r'[APMapm]'), '').trim().split(':');
-      var startHour = int.parse(startTimeParts[0]);
-      final startMinute = startTimeParts.length > 1 ? int.parse(startTimeParts[1].trim()) : 0;
+      // Parse template start time (e.g., "09:00" in HH:MM format)
+      final startTimeParts = template.startTime.split(':');
+      final startHour = int.parse(startTimeParts[0]);
+      final startMinute = startTimeParts.length > 1 ? int.parse(startTimeParts[1]) : 0;
       
-      if (template.startTime.toLowerCase().contains('pm') && startHour != 12) {
-        startHour += 12;
-      } else if (template.startTime.toLowerCase().contains('am') && startHour == 12) {
-        startHour = 0;
-      }
-      
-      // Get default hours for this job code
-      final defaultHours = defaultHoursMap[employee.jobCode.toLowerCase()] ?? 8.0;
+      // Parse template end time
+      final endTimeParts = template.endTime.split(':');
+      final endHour = int.parse(endTimeParts[0]);
+      final endMinute = endTimeParts.length > 1 ? int.parse(endTimeParts[1]) : 0;
       
       for (final dayIndex in selectedDays) {
         final day = weekStart.add(Duration(days: dayIndex));
@@ -676,7 +665,12 @@ class _ScheduleViewState extends State<ScheduleView> {
         }
         
         final shiftStart = DateTime(day.year, day.month, day.day, startHour, startMinute);
-        final shiftEnd = shiftStart.add(Duration(minutes: (defaultHours * 60).round()));
+        var shiftEnd = DateTime(day.year, day.month, day.day, endHour, endMinute);
+        
+        // Handle overnight shifts (end time is next day)
+        if (shiftEnd.isBefore(shiftStart) || shiftEnd.isAtSameMomentAs(shiftStart)) {
+          shiftEnd = shiftEnd.add(const Duration(days: 1));
+        }
         
         newShifts.add(Shift(
           employeeId: employee.id!,
@@ -1496,7 +1490,6 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
       orElse: () => JobCodeSettings(
         code: employee.jobCode,
         hasPTO: false,
-        defaultDailyHours: 8.0,
         maxHoursPerWeek: 40,
         colorHex: '#4285F4',
       ),
@@ -1508,7 +1501,6 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
     required DateTime day,
     required int employeeId,
     required List<ShiftTemplate> templates,
-    required double defaultHours,
     required Color bannerColor,
     required String reason,
     required String type,
@@ -1536,12 +1528,12 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                     const Text('Templates:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                     const SizedBox(height: 8),
                     ...templates.map((template) {
-                      final parts = template.startTime.split(':');
-                      final startHour = int.parse(parts[0]);
-                      final startMin = int.parse(parts[1]);
-                      final endTime = DateTime(2000, 1, 1, startHour, startMin)
-                          .add(Duration(minutes: (defaultHours * 60).round()));
-                      final endTimeStr = '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}';
+                      final startParts = template.startTime.split(':');
+                      final startHour = int.parse(startParts[0]);
+                      final startMin = int.parse(startParts[1]);
+                      final endParts = template.endTime.split(':');
+                      final endHour = int.parse(endParts[0]);
+                      final endMin = int.parse(endParts[1]);
 
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 8),
@@ -1557,8 +1549,8 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                             int startIdx = times.indexWhere((t) => t.hour == startHour && t.minute == startMin);
                             if (startIdx == -1) startIdx = 0;
                             
-                            int endIdx = startIdx + (defaultHours * 4).round();
-                            if (endIdx >= times.length) endIdx = times.length - 1;
+                            int endIdx = times.indexWhere((t) => t.hour == endHour && t.minute == endMin);
+                            if (endIdx == -1) endIdx = times.length - 1;
 
                             setDialogState(() {
                               selectedTemplate = template;
@@ -1572,7 +1564,7 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                               Text(template.templateName, style: const TextStyle(fontSize: 11)),
                               const SizedBox(height: 2),
                               Text(
-                                '${template.startTime}-$endTimeStr',
+                                '${template.startTime}-${template.endTime}',
                                 style: const TextStyle(fontSize: 10, color: Colors.grey),
                               ),
                             ],
@@ -2269,15 +2261,10 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
   Future<void> _showAddShiftDialogWithAvailability(BuildContext context, DateTime day, int employeeId) async {
     // Get employee job code
     final employee = widget.employees.firstWhere((e) => e.id == employeeId);
-    final jobCode = employee.jobCode;
 
     // Load shared templates (not job-code specific)
     await _shiftTemplateDao.insertDefaultTemplatesIfMissing();
     final templates = await _shiftTemplateDao.getAllTemplates();
-
-    // Load job code settings for duration
-    final jobCodeSettings = await _jobCodeDao.getByCode(jobCode);
-    final defaultHours = jobCodeSettings?.defaultDailyHours ?? 8.0;
 
     // Check availability
     final availability = await _checkAvailability(employeeId, day);
@@ -2300,7 +2287,6 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
         day: day,
         employeeId: employeeId,
         templates: templates,
-        defaultHours: defaultHours,
         bannerColor: bannerColor,
         reason: reason,
         type: type,
@@ -2644,16 +2630,11 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
       (e) => e.id == shift.employeeId,
       orElse: () => widget.employees.first,
     );
-    final jobCode = employee.jobCode;
     final day = DateTime(shift.start.year, shift.start.month, shift.start.day);
 
     // Load shared templates (not job-code specific)
     await _shiftTemplateDao.insertDefaultTemplatesIfMissing();
     final templates = await _shiftTemplateDao.getAllTemplates();
-
-    // Load job code settings for duration
-    final jobCodeSettings = await _jobCodeDao.getByCode(jobCode);
-    final defaultHours = jobCodeSettings?.defaultDailyHours ?? 8;
 
     // Check availability
     final availability = await _checkAvailability(shift.employeeId, day);
@@ -2697,12 +2678,12 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                         const Text('Templates:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                         const SizedBox(height: 8),
                         ...templates.map((template) {
-                          final parts = template.startTime.split(':');
-                          final startHour = int.parse(parts[0]);
-                          final startMin = int.parse(parts[1]);
-                          final endTime = DateTime(2000, 1, 1, startHour, startMin)
-                              .add(Duration(minutes: (defaultHours * 60).round()));
-                          final endTimeStr = '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}';
+                          final startParts = template.startTime.split(':');
+                          final startHour = int.parse(startParts[0]);
+                          final startMin = int.parse(startParts[1]);
+                          final endParts = template.endTime.split(':');
+                          final endHour = int.parse(endParts[0]);
+                          final endMin = int.parse(endParts[1]);
 
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 8),
@@ -2718,8 +2699,8 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                 int startIdx = times.indexWhere((t) => t.hour == startHour && t.minute == startMin);
                                 if (startIdx == -1) startIdx = 0;
                                 
-                                int endIdx = startIdx + (defaultHours * 4).round();
-                                if (endIdx >= times.length) endIdx = times.length - 1;
+                                int endIdx = times.indexWhere((t) => t.hour == endHour && t.minute == endMin);
+                                if (endIdx == -1) endIdx = times.length - 1;
 
                                 setDialogState(() {
                                   selectedTemplate = template;
@@ -2733,7 +2714,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                   Text(template.templateName, style: const TextStyle(fontSize: 11)),
                                   const SizedBox(height: 2),
                                   Text(
-                                    '${template.startTime}-$endTimeStr',
+                                    '${template.startTime}-${template.endTime}',
                                     style: const TextStyle(fontSize: 10, color: Colors.grey),
                                   ),
                                 ],
@@ -2995,9 +2976,27 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                           : null,
             ),
             child: shiftsForCell.isEmpty
-                ? (isDragHover
-                    ? const Center(child: Icon(Icons.add, color: Colors.blue, size: 20))
-                    : const SizedBox.shrink())
+                ? FutureBuilder<Map<String, dynamic>>(
+                    future: _checkAvailability(employee.id!, day),
+                    builder: (context, snapshot) {
+                      bool showDash = false;
+                      if (snapshot.hasData) {
+                        final type = snapshot.data!['type'] as String;
+                        final available = snapshot.data!['available'] as bool;
+                        if (type == 'time-off' || !available) {
+                          showDash = true;
+                        }
+                      }
+                      
+                      if (isDragHover) {
+                        return const Center(child: Icon(Icons.add, color: Colors.blue, size: 20));
+                      }
+                      if (showDash) {
+                        return const Center(child: Text('-', style: TextStyle(fontSize: 18, color: Colors.grey)));
+                      }
+                      return const SizedBox.shrink();
+                    },
+                  )
                 : Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     mainAxisAlignment: MainAxisAlignment.center,

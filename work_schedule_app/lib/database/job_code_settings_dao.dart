@@ -42,7 +42,6 @@ class JobCodeSettingsDao {
       JobCodeSettings(
         code: 'gm',
         hasPTO: true,
-        defaultDailyHours: 8.0,
         maxHoursPerWeek: 40,
         colorHex: '#8E24AA',
         sortOrder: 1,
@@ -50,7 +49,6 @@ class JobCodeSettingsDao {
       JobCodeSettings(
         code: 'assistant',
         hasPTO: true,
-        defaultDailyHours: 8.0,
         maxHoursPerWeek: 40,
         colorHex: '#4285F4',
         sortOrder: 2,
@@ -58,7 +56,6 @@ class JobCodeSettingsDao {
       JobCodeSettings(
         code: 'swing',
         hasPTO: true,
-        defaultDailyHours: 8.0,
         maxHoursPerWeek: 40,
         colorHex: '#DB4437',
         sortOrder: 3,
@@ -66,7 +63,6 @@ class JobCodeSettingsDao {
       JobCodeSettings(
         code: 'mit',
         hasPTO: true,
-        defaultDailyHours: 8.0,
         maxHoursPerWeek: 40,
         colorHex: '#009688',
         sortOrder: 4,
@@ -74,7 +70,6 @@ class JobCodeSettingsDao {
       JobCodeSettings(
         code: 'breakfast mgr',
         hasPTO: true,
-        defaultDailyHours: 8.0,
         maxHoursPerWeek: 40,
         colorHex: '#F4B400',
         sortOrder: 5,

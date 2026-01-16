@@ -32,6 +32,7 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
   Future<void> _addTemplate() async {
     String name = '';
     TimeOfDay startTime = const TimeOfDay(hour: 9, minute: 0);
+    TimeOfDay endTime = const TimeOfDay(hour: 17, minute: 0);
 
     await showDialog(
       context: context,
@@ -62,6 +63,21 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
                   }
                 },
               ),
+              ListTile(
+                title: const Text('End Time'),
+                trailing: Text('${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}'),
+                onTap: () async {
+                  final picked = await showTimePicker(
+                    context: context,
+                    initialTime: endTime,
+                  );
+                  if (picked != null) {
+                    setDialogState(() {
+                      endTime = picked;
+                    });
+                  }
+                },
+              ),
             ],
           ),
           actions: [
@@ -76,6 +92,7 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
                 final template = ShiftTemplate(
                   templateName: name.trim(),
                   startTime: '${startTime.hour.toString().padLeft(2, '0')}:${startTime.minute.toString().padLeft(2, '0')}',
+                  endTime: '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
                 );
                 
                 await _templateDao.insertTemplate(template);
@@ -92,10 +109,15 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
 
   Future<void> _editTemplate(ShiftTemplate template) async {
     String name = template.templateName;
-    final parts = template.startTime.split(':');
+    final startParts = template.startTime.split(':');
+    final endParts = template.endTime.split(':');
     TimeOfDay startTime = TimeOfDay(
-      hour: int.parse(parts[0]),
-      minute: int.parse(parts[1]),
+      hour: int.parse(startParts[0]),
+      minute: int.parse(startParts[1]),
+    );
+    TimeOfDay endTime = TimeOfDay(
+      hour: int.parse(endParts[0]),
+      minute: int.parse(endParts[1]),
     );
 
     await showDialog(
@@ -127,6 +149,21 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
                   }
                 },
               ),
+              ListTile(
+                title: const Text('End Time'),
+                trailing: Text('${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}'),
+                onTap: () async {
+                  final picked = await showTimePicker(
+                    context: context,
+                    initialTime: endTime,
+                  );
+                  if (picked != null) {
+                    setDialogState(() {
+                      endTime = picked;
+                    });
+                  }
+                },
+              ),
             ],
           ),
           actions: [
@@ -141,6 +178,7 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
                 final updated = template.copyWith(
                   templateName: name.trim(),
                   startTime: '${startTime.hour.toString().padLeft(2, '0')}:${startTime.minute.toString().padLeft(2, '0')}',
+                  endTime: '${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}',
                 );
                 
                 await _templateDao.updateTemplate(updated);
@@ -195,7 +233,7 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Create custom shift templates (shared across all job codes). When applied, duration uses the employee\'s job code default daily hours.',
+            'Create custom shift templates with start and end times. Templates are shared across all job codes.',
             style: TextStyle(color: Colors.grey),
           ),
           const SizedBox(height: 24),
@@ -219,7 +257,7 @@ class _ShiftTemplatesTabState extends State<ShiftTemplatesTab> {
                       return Card(
                         child: ListTile(
                           title: Text(template.templateName),
-                          subtitle: Text('Starts at ${template.startTime}'),
+                          subtitle: Text('${template.startTime} - ${template.endTime}'),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
