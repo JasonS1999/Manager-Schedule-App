@@ -999,71 +999,93 @@ class _TimeOffPageState extends State<TimeOffPage> {
   }
 
   Widget _buildCalendarGrid(List<List<DateTime>> weeks) {
-    return Column(
-      children: weeks.map((week) {
-        return Row(
-          children: week.map((day) {
-            final isCurrentMonth = day.month == _focusedMonth.month;
-            final isToday = DateTime.now().year == day.year &&
-                DateTime.now().month == day.month &&
-                DateTime.now().day == day.day;
-            final isSelected = _selectedDay != null &&
-                _selectedDay!.year == day.year &&
-                _selectedDay!.month == day.month &&
-                _selectedDay!.day == day.day;
-
-            final count = _countForDay(day);
-
-            return Expanded(
-              child: GestureDetector(
-                onTap: () => _onDayTapped(day),
-                onDoubleTap: () {
-                  if (day.month != _focusedMonth.month) return;
-                  _addTimeOff(day);
-                },
-                child: Container(
-                  margin: const EdgeInsets.all(2),
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? Colors.blue.shade100
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(6),
-                    border: isToday
-                        ? Border.all(color: Colors.blue, width: 1.5)
-                        : null,
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        "${day.day}",
-                        style: TextStyle(
-                          color: isCurrentMonth
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).disabledColor,
-                          fontWeight:
-                              count > 0 ? FontWeight.bold : FontWeight.normal,
-                        ),
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.primary, width: 3),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: weeks.asMap().entries.map((entry) {
+          final weekIndex = entry.key;
+          final week = entry.value;
+          final isLastWeek = weekIndex == weeks.length - 1;
+          
+          return Container(
+            decoration: BoxDecoration(
+              border: isLastWeek
+                  ? null
+                  : Border(
+                      bottom: BorderSide(
+                        color: Theme.of(context).dividerColor,
+                        width: 1,
                       ),
-                      if (count > 0)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Text(
-                            "$count",
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.redAccent,
+                    ),
+            ),
+            child: Row(
+              children: week.map((day) {
+                final isCurrentMonth = day.month == _focusedMonth.month;
+                final isToday = DateTime.now().year == day.year &&
+                    DateTime.now().month == day.month &&
+                    DateTime.now().day == day.day;
+                final isSelected = _selectedDay != null &&
+                    _selectedDay!.year == day.year &&
+                    _selectedDay!.month == day.month &&
+                    _selectedDay!.day == day.day;
+
+                final count = _countForDay(day);
+
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: () => _onDayTapped(day),
+                    onDoubleTap: () {
+                      if (day.month != _focusedMonth.month) return;
+                      _addTimeOff(day);
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.all(2),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? Colors.blue.shade100
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(6),
+                        border: isToday
+                            ? Border.all(color: Colors.blue, width: 1.5)
+                            : null,
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            "${day.day}",
+                            style: TextStyle(
+                              color: isCurrentMonth
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Theme.of(context).disabledColor,
+                              fontWeight:
+                                  count > 0 ? FontWeight.bold : FontWeight.normal,
                             ),
                           ),
-                        ),
-                    ],
+                          if (count > 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              "$count",
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.redAccent,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          }).toList(),
+              );
+            }).toList(),
+          ),
         );
       }).toList(),
+      ),
     );
   }
 

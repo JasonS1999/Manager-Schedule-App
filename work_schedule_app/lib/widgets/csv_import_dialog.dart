@@ -218,6 +218,64 @@ class _CsvImportDialogState extends State<CsvImportDialog> {
     Navigator.of(context).pop(_importedCount);
   }
 
+  /// Show dialog to create a new job code
+  Future<void> _addNewJobCode() async {
+    String code = '';
+    
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("New Job Code"),
+          content: TextField(
+            autofocus: true,
+            decoration: const InputDecoration(labelText: "Code Name"),
+            onChanged: (v) => code = v,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (code.trim().isEmpty) return;
+
+                // Get next sort order for new job code
+                final nextOrder = await _jobCodeDao.getNextSortOrder();
+                final newCode = JobCodeSettings(
+                  code: code.trim(),
+                  hasPTO: false,
+                  maxHoursPerWeek: 40,
+                  colorHex: '#4285F4',
+                  sortOrder: nextOrder,
+                );
+
+                await _jobCodeDao.upsert(newCode);
+                Navigator.pop(context, true);
+              },
+              child: const Text("Add"),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (created == true) {
+      // Reload job codes and select the new one
+      final codes = await _jobCodeDao.getAll();
+      setState(() {
+        _jobCodes = codes;
+        // Select the newly created code (it will be at the end or sorted)
+        final newCodeEntry = codes.firstWhere(
+          (jc) => jc.code.toLowerCase() == code.trim().toLowerCase(),
+          orElse: () => codes.first,
+        );
+        _selectedJobCode = newCodeEntry.code;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Dialog(
@@ -372,25 +430,37 @@ class _CsvImportDialogState extends State<CsvImportDialog> {
           style: TextStyle(fontWeight: FontWeight.w500),
         ),
         const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          value: _selectedJobCode,
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
-          items: _jobCodes
-              .map(
-                (jc) => DropdownMenuItem(
-                  value: jc.code,
-                  child: Text(jc.code),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                value: _selectedJobCode,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
-              )
-              .toList(),
-          onChanged: (value) {
-            if (value != null) {
-              setState(() => _selectedJobCode = value);
-            }
-          },
+                items: _jobCodes
+                    .map(
+                      (jc) => DropdownMenuItem(
+                        value: jc.code,
+                        child: Text(jc.code),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _selectedJobCode = value);
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            IconButton.filled(
+              icon: const Icon(Icons.add),
+              tooltip: 'Add New Job Code',
+              onPressed: _addNewJobCode,
+            ),
+          ],
         ),
         const SizedBox(height: 24),
         Row(

@@ -298,7 +298,7 @@ class _RosterPageState extends State<RosterPage> {
                 return ListTile(
                   title: Text(e.name),
                   subtitle: Text(
-                    "${e.jobCode} • Vacation: ${e.vacationWeeksUsed}/${e.vacationWeeksAllowed}",
+                    "${e.jobCode} • Vacation Weeks: ${e.vacationWeeksAllowed}",
                   ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,

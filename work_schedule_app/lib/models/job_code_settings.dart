@@ -2,6 +2,7 @@ class JobCodeSettings {
   final String code;
   final bool hasPTO;
   final int maxHoursPerWeek;
+  final int defaultScheduledHours;
   final String colorHex;
   final int sortOrder;
 
@@ -12,6 +13,7 @@ class JobCodeSettings {
     required this.code,
     required this.hasPTO,
     this.maxHoursPerWeek = 40,
+    this.defaultScheduledHours = 40,
     required this.colorHex,
     this.sortOrder = 0,
   });
@@ -19,6 +21,7 @@ class JobCodeSettings {
   JobCodeSettings copyWith({
     bool? hasPTO,
     int? maxHoursPerWeek,
+    int? defaultScheduledHours,
     String? colorHex,
     int? sortOrder,
   }) {
@@ -26,6 +29,7 @@ class JobCodeSettings {
       code: code,
       hasPTO: hasPTO ?? this.hasPTO,
       maxHoursPerWeek: maxHoursPerWeek ?? this.maxHoursPerWeek,
+      defaultScheduledHours: defaultScheduledHours ?? this.defaultScheduledHours,
       colorHex: colorHex ?? this.colorHex,
       sortOrder: sortOrder ?? this.sortOrder,
     );
@@ -35,6 +39,7 @@ class JobCodeSettings {
     return {
       'code': code,
       'hasPTO': hasPTO ? 1 : 0,
+      'defaultScheduledHours': defaultScheduledHours,
       'defaultVacationDays': defaultVacationDays,
       'maxHoursPerWeek': maxHoursPerWeek,
       'colorHex': colorHex,
@@ -47,6 +52,7 @@ class JobCodeSettings {
       code: map['code'],
       hasPTO: map['hasPTO'] == 1,
       maxHoursPerWeek: map['maxHoursPerWeek'] ?? 40,
+      defaultScheduledHours: map['defaultScheduledHours'] ?? 40,
       colorHex: map['colorHex'] ?? '#4285F4',
       sortOrder: map['sortOrder'] ?? 0,
     );

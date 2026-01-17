@@ -36,9 +36,6 @@ class _NavigationShellState extends State<NavigationShell> {
     final isWide = MediaQuery.of(context).size.width >= 700;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_titles[_index]),
-      ),
       body: Row(
         children: [
           if (isWide)

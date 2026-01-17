@@ -40,35 +40,35 @@ class JobCodeSettingsDao {
 
     final defaults = [
       JobCodeSettings(
-        code: 'gm',
+        code: 'GM',
         hasPTO: true,
         maxHoursPerWeek: 40,
         colorHex: '#8E24AA',
         sortOrder: 1,
       ),
       JobCodeSettings(
-        code: 'assistant',
+        code: 'Assistant',
         hasPTO: true,
         maxHoursPerWeek: 40,
         colorHex: '#4285F4',
         sortOrder: 2,
       ),
       JobCodeSettings(
-        code: 'swing',
+        code: 'Cert. Swing Mgr',
         hasPTO: true,
         maxHoursPerWeek: 40,
         colorHex: '#DB4437',
         sortOrder: 3,
       ),
       JobCodeSettings(
-        code: 'mit',
+        code: 'MIT',
         hasPTO: true,
         maxHoursPerWeek: 40,
         colorHex: '#009688',
         sortOrder: 4,
       ),
       JobCodeSettings(
-        code: 'breakfast mgr',
+        code: 'Breakfast Mgr',
         hasPTO: true,
         maxHoursPerWeek: 40,
         colorHex: '#F4B400',

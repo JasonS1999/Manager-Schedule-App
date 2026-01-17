@@ -3,9 +3,11 @@ import '../database/employee_dao.dart';
 import '../database/settings_dao.dart';
 import '../database/pto_history_dao.dart';
 import '../database/time_off_dao.dart';
+import '../database/job_code_settings_dao.dart';
 import '../models/employee.dart';
 import '../models/settings.dart';
 import '../models/time_off_entry.dart';
+import '../models/job_code_settings.dart';
 
 class TrimesterSummary {
   final String label;
@@ -44,8 +46,10 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
   final SettingsDao _settingsDao = SettingsDao();
   final PtoHistoryDao _ptoHistoryDao = PtoHistoryDao();
   final TimeOffDao _timeOffDao = TimeOffDao();
+  final JobCodeSettingsDao _jobCodeSettingsDao = JobCodeSettingsDao();
 
   List<Employee> _employees = [];
+  List<JobCodeSettings> _jobCodeSettings = [];
   Settings? _settings;
   List<TimeOffEntry> _allEntries = [];
   int _selectedTrimesterYear = DateTime.now().year;
@@ -68,25 +72,51 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
       final employees = await _employeeDao.getEmployees();
       final settings = await _settingsDao.getSettings();
       final entries = await _timeOffDao.getAllTimeOff();
+      final jobCodeSettings = await _jobCodeSettingsDao.getAll();
+
+      // Find employees with PTO enabled for the dropdown
+      final ptoEnabledCodes = jobCodeSettings
+          .where((jc) => jc.hasPTO)
+          .map((jc) => jc.code.toLowerCase())
+          .toSet();
+      final ptoEmployees = employees
+          .where((e) => ptoEnabledCodes.contains(e.jobCode.toLowerCase()))
+          .toList();
 
       setState(() {
         _employees = employees;
+        _jobCodeSettings = jobCodeSettings;
         _settings = settings;
 
         // All entries (model enforces non-nullable fields)
         _allEntries = entries;
 
-        // Default selected employee to first in list (if any)
-        _selectedEmployeeId = employees.isNotEmpty ? employees.first.id : null;
+        // Default selected employee to first PTO-enabled employee
+        _selectedEmployeeId = ptoEmployees.isNotEmpty ? ptoEmployees.first.id : null;
       });
     } catch (e) {
       debugPrint("Tracker load error: $e");
       setState(() {
         _employees = [];
+        _jobCodeSettings = [];
         _settings = null;
         _allEntries = [];
       });
     }
+  }
+
+  /// Check if an employee's job code has PTO enabled
+  bool _hasPtoEnabled(Employee employee) {
+    final jobCodeLower = employee.jobCode.toLowerCase();
+    final setting = _jobCodeSettings.firstWhere(
+      (jc) => jc.code.toLowerCase() == jobCodeLower,
+      orElse: () => JobCodeSettings(
+        code: employee.jobCode,
+        hasPTO: false,
+        colorHex: '#808080',
+      ),
+    );
+    return setting.hasPTO;
   }
 
   // ---------------------------------------------------------------------------
@@ -391,6 +421,9 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
 
       for (final e in _employees) {
         if (e.id == null) continue;
+        
+        // Only include employees with PTO-enabled job codes
+        if (!_hasPtoEnabled(e)) continue;
 
         final pto = await _calculatePto(e);
 
@@ -455,7 +488,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
             ),
             const Divider(),
 
-            // Employee selector dropdown (single employee view)
+            // Employee selector dropdown (single employee view) - only PTO-enabled employees
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(
@@ -466,7 +499,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
                       hint: const Text('Select employee'),
                       isExpanded: true,
                       items: _employees
-                          .where((ev) => ev.id != null)
+                          .where((ev) => ev.id != null && _hasPtoEnabled(ev))
                           .map((ev) => DropdownMenuItem<int?>(
                                 value: ev.id,
                                 child: Text(ev.name),
@@ -565,6 +598,9 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
   // ---------------------------------------------------------------------------
 
   Widget _buildVacationSection() {
+    // Only show employees with 1 or more vacation weeks allowed
+    final vacationEmployees = _employees.where((e) => e.vacationWeeksAllowed >= 1).toList();
+    
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -579,7 +615,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
               ),
             ),
             const Divider(),
-            ..._employees.map((e) => _buildVacationRow(e)),
+            ...vacationEmployees.map((e) => _buildVacationRow(e)),
           ],
         ),
       ),

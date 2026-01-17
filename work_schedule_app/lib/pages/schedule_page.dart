@@ -7,6 +7,9 @@ class SchedulePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text("Schedule"),
+      ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(12),
