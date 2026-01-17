@@ -4078,6 +4078,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
           if (_isLabelOnly(shift.text))
             Text(
@@ -4091,14 +4092,11 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
             )
           else ...[
             Text(
-              '$startLabel-',
+              '$startLabel-$endLabel',
               style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
-            ),
-            Text(
-              endLabel,
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
-              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
             if (shift.text.isNotEmpty)
               Text(
