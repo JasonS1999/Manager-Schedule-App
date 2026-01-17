@@ -9,6 +9,7 @@ import '../../database/shift_dao.dart';
 import '../../database/schedule_note_dao.dart';
 import '../../database/shift_runner_dao.dart';
 import '../../database/shift_type_dao.dart';
+import '../../database/store_hours_dao.dart';
 import '../../models/employee.dart';
 import '../../models/time_off_entry.dart';
 import '../../models/shift_template.dart';
@@ -17,6 +18,7 @@ import '../../models/schedule_note.dart';
 import '../../models/job_code_settings.dart';
 import '../../models/shift_runner.dart';
 import '../../models/shift_type.dart';
+import '../../models/store_hours.dart';
 import '../../services/schedule_pdf_service.dart';
 import '../../services/schedule_undo_manager.dart';
 import 'shift_runner_table.dart';
@@ -180,6 +182,12 @@ class _ScheduleViewState extends State<ScheduleView> {
   Future<void> _loadEmployees() async {
     // Load job code settings first for proper sorting
     _jobCodeSettings = await _jobCodeSettingsDao.getAll();
+    
+    // Load store hours into cache
+    final storeHoursDao = StoreHoursDao();
+    final storeHours = await storeHoursDao.getStoreHours();
+    StoreHours.setCache(storeHours);
+    
     final list = await _employeeDao.getEmployees();
     debugPrint('ScheduleView: loaded ${list.length} employee(s) from DB');
     if (!mounted) return;
@@ -1651,8 +1659,9 @@ class DailyScheduleView extends StatelessWidget {
   String _formatTimeOfDay(TimeOfDay t, {bool forCell = false}) {
     // Special cases for cell display
     if (forCell) {
-      if (t.hour == 4 && t.minute == 30) return 'Op';
-      if (t.hour == 1 && t.minute == 0) return 'CL';
+      final storeHours = StoreHours.cached;
+      if (storeHours.isOpenTime(t.hour, t.minute)) return 'Op';
+      if (storeHours.isCloseTime(t.hour, t.minute)) return 'CL';
       // Show just hour, or hour:minute if not on the hour
       final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
       if (t.minute == 0) return '$h';
@@ -2880,8 +2889,9 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
   String _formatTimeOfDay(TimeOfDay t, {bool forCell = false}) {
     // Special cases for cell display
     if (forCell) {
-      if (t.hour == 4 && t.minute == 30) return 'Op';
-      if (t.hour == 1 && t.minute == 0) return 'CL';
+      final storeHours = StoreHours.cached;
+      if (storeHours.isOpenTime(t.hour, t.minute)) return 'Op';
+      if (storeHours.isCloseTime(t.hour, t.minute)) return 'CL';
       // Show just hour, or hour:minute if not on the hour
       final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
       if (t.minute == 0) return '$h';
@@ -3601,8 +3611,9 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
   String _formatTimeOfDay(TimeOfDay t, {bool forCell = false}) {
     // Special cases for cell display
     if (forCell) {
-      if (t.hour == 4 && t.minute == 30) return 'Op';
-      if (t.hour == 1 && t.minute == 0) return 'CL';
+      final storeHours = StoreHours.cached;
+      if (storeHours.isOpenTime(t.hour, t.minute)) return 'Op';
+      if (storeHours.isCloseTime(t.hour, t.minute)) return 'CL';
       // Show just hour, or hour:minute if not on the hour
       final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
       if (t.minute == 0) return '$h';

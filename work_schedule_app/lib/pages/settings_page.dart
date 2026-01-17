@@ -4,6 +4,7 @@ import '../widgets/settings/job_codes_tab.dart';
 import '../widgets/settings/shift_runner_colors_tab.dart';
 import '../widgets/settings/schedule_settings_tab.dart';
 import '../widgets/settings/shift_templates_tab.dart';
+import '../widgets/settings/store_hours_tab.dart';
 import '../services/theme_service.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -20,7 +21,7 @@ class _SettingsPageState extends State<SettingsPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 6, vsync: this);
   }
 
   @override
@@ -68,6 +69,7 @@ class _SettingsPageState extends State<SettingsPage>
             Tab(text: "Job Codes"),
             Tab(text: "Shift Templates"),
             Tab(text: "Shift Runner"),
+            Tab(text: "Store Hours"),
             Tab(text: "Schedule"),
           ],
         ),
@@ -82,6 +84,7 @@ class _SettingsPageState extends State<SettingsPage>
                 JobCodesTab(),
                 ShiftTemplatesTab(),
                 ShiftRunnerColorsTab(),
+                StoreHoursTab(),
                 ScheduleSettingsTab(),
               ],
             ),

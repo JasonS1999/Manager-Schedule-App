@@ -175,6 +175,20 @@ Future<void> _onCreate(Database db, int version) async {
     )
   ''');
 
+  await db.execute('''
+    CREATE TABLE store_hours (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      openTime TEXT NOT NULL,
+      closeTime TEXT NOT NULL
+    )
+  ''');
+
+  // Insert default store hours
+  await db.insert('store_hours', {
+    'openTime': '04:30',
+    'closeTime': '01:00',
+  });
+
   log("✅ Schema created", name: 'AppDatabase');
 } 
 
@@ -207,7 +221,7 @@ class AppDatabase {
 
     _db = await openDatabase(
       path,
-      version: 16,
+      version: 17,
       onCreate: _onCreate,
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -431,6 +445,21 @@ class AppDatabase {
               'colorHex': colorMap[key] ?? def['colorHex'],
             });
           }
+        }
+        if (oldVersion < 17) {
+          // Add store_hours table for configurable open/close times
+          await db.execute('''
+            CREATE TABLE store_hours (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              openTime TEXT NOT NULL,
+              closeTime TEXT NOT NULL
+            )
+          ''');
+          // Insert defaults
+          await db.insert('store_hours', {
+            'openTime': '04:30',
+            'closeTime': '01:00',
+          });
         }
       },
     );
