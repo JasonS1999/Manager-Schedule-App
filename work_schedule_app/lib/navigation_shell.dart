@@ -43,7 +43,7 @@ class _NavigationShellState extends State<NavigationShell> {
     _checkForUpdates();
   }
 
-  Future<void> _checkForUpdates() async {
+  Future<void> _checkForUpdates({bool showDialogIfAvailable = false}) async {
     setState(() => _checkingUpdate = true);
     final hasUpdate = await UpdateService.checkForUpdates();
     if (mounted) {
@@ -51,6 +51,9 @@ class _NavigationShellState extends State<NavigationShell> {
         _updateAvailable = hasUpdate;
         _checkingUpdate = false;
       });
+      if (showDialogIfAvailable && hasUpdate) {
+        _showUpdateDialog();
+      }
     }
   }
 
@@ -194,7 +197,7 @@ class _NavigationShellState extends State<NavigationShell> {
             )
           else
             TextButton.icon(
-              onPressed: _checkForUpdates,
+              onPressed: () => _checkForUpdates(showDialogIfAvailable: true),
               icon: const Icon(Icons.refresh, size: 16),
               label: Text(
                 'v${UpdateService.currentVersion}',
