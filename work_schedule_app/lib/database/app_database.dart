@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:developer';
+import 'dart:io';
 
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -252,7 +253,29 @@ class AppDatabase {
   Future<void> init({String? dbPath}) async {
     if (_db != null) return;
 
-    final path = dbPath ?? join(await getDatabasesPath(), 'work_schedule.db');
+    String path;
+    if (dbPath != null) {
+      path = dbPath;
+    } else {
+      // Store database in AppData folder so it persists across app updates
+      final appData = Platform.environment['APPDATA'] ?? await getDatabasesPath();
+      final appDir = Directory(join(appData, 'WorkScheduleApp'));
+      if (!appDir.existsSync()) {
+        appDir.createSync(recursive: true);
+      }
+      path = join(appDir.path, 'work_schedule.db');
+      
+      // Migration: check if old database exists in default location and move it
+      final oldPath = join(await getDatabasesPath(), 'work_schedule.db');
+      final oldFile = File(oldPath);
+      final newFile = File(path);
+      if (oldFile.existsSync() && !newFile.existsSync()) {
+        log('Migrating database from $oldPath to $path', name: 'AppDatabase');
+        await oldFile.copy(path);
+      }
+    }
+    
+    log('Database path: $path', name: 'AppDatabase');
 
     _db = await openDatabase(
       path,
