@@ -4513,7 +4513,8 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                         dayOfWeek: day.weekday,
                       );
 
-                      return Expanded(
+                      return SizedBox(
+                        height: 50,
                         child: Draggable<ShiftPlaceholder>(
                           data: shift,
                           feedback: Material(
@@ -4907,25 +4908,12 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final dayColumnWidth = 120.0;
-              const groupGapWidth = 12.0;
               const tablePadding = 40.0; // Extra padding to prevent edge overhang
-
-              int jobCodeBreaks = 0;
-              for (int i = 1; i < widget.employees.length; i++) {
-                final prev = widget.employees[i - 1].jobCode.toLowerCase();
-                final curr = widget.employees[i].jobCode.toLowerCase();
-                if (prev != curr) jobCodeBreaks++;
-              }
 
               final availableWidth =
                   constraints.maxWidth - dayColumnWidth - tablePadding;
-              final effectiveAvailableWidth =
-                  (availableWidth - (jobCodeBreaks * groupGapWidth)).clamp(
-                    0.0,
-                    double.infinity,
-                  );
               final cellWidth = widget.employees.isNotEmpty
-                  ? (effectiveAvailableWidth / widget.employees.length).clamp(
+                  ? (availableWidth / widget.employees.length).clamp(
                       80.0,
                       200.0,
                     )
@@ -4935,21 +4923,12 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
               final totalWidth =
                   dayColumnWidth +
                   (cellWidth * widget.employees.length) +
-                  (jobCodeBreaks * groupGapWidth) +
                   4;
 
               List<Widget> buildEmployeeHeaderCells() {
                 final cells = <Widget>[];
                 for (int i = 0; i < widget.employees.length; i++) {
                   final employee = widget.employees[i];
-
-                  if (i > 0) {
-                    final prevJob = widget.employees[i - 1].jobCode.toLowerCase();
-                    final currJob = employee.jobCode.toLowerCase();
-                    if (prevJob != currJob) {
-                      cells.add(Container(width: groupGapWidth, height: 60));
-                    }
-                  }
 
                   final bg = jobCodeColorFor(employee.jobCode);
                   final fg =
@@ -4960,11 +4939,13 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                   cells.add(
                     Container(
                       width: cellWidth,
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                      height: 60,
+                      padding: const EdgeInsets.all(5),
                       decoration: BoxDecoration(
                         color: bg,
-                        border: Border(
-                          left: BorderSide(color: Theme.of(context).dividerColor),
+                        border: Border.all(
+                          color: Colors.black,
+                          width: 2,
                         ),
                       ),
                       child: Center(
@@ -5168,45 +5149,16 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                                         ),
 
                                         // Employee cells for this day
-                                        ...widget.employees
-                                            .asMap()
-                                            .entries
-                                            .expand((entry) {
-                                              final i = entry.key;
-                                              final employee = entry.value;
-                                              final widgets = <Widget>[];
-
-                                              if (i > 0) {
-                                                final prevJob = widget
-                                                    .employees[i - 1]
-                                                    .jobCode
-                                                    .toLowerCase();
-                                                final currJob = employee.jobCode
-                                                    .toLowerCase();
-                                                if (prevJob != currJob) {
-                                                  widgets.add(
-                                                    SizedBox(
-                                                      width: groupGapWidth,
-                                                    ),
-                                                  );
-                                                }
-                                              }
-
-                                              widgets.add(
-                                                _buildMonthlyEmployeeCell(
-                                                  context: context,
-                                                  day: day,
-                                                  isCurrentMonth:
-                                                      isCurrentMonth,
-                                                  isWeekend: isWeekend,
-                                                  employee: employee,
-                                                  cellWidth: cellWidth,
-                                                ),
-                                              );
-
-                                              return widgets;
-                                            })
-                                            .toList(),
+                                        ...widget.employees.map((employee) {
+                                          return _buildMonthlyEmployeeCell(
+                                            context: context,
+                                            day: day,
+                                            isCurrentMonth: isCurrentMonth,
+                                            isWeekend: isWeekend,
+                                            employee: employee,
+                                            cellWidth: cellWidth,
+                                          );
+                                        }).toList(),
                                       ],
                                     ),
                                   ),
