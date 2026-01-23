@@ -93,6 +93,12 @@ class FirestoreSyncService {
     return ref.collection('shiftTemplates');
   }
 
+  CollectionReference<Map<String, dynamic>>? get _scheduleNotesRef {
+    final ref = _managerDocRef;
+    if (ref == null) return null;
+    return ref.collection('scheduleNotes');
+  }
+
   // ============== EMPLOYEE ACCOUNT SYNC ==============
 
   /// Call Cloud Function to create Firebase Auth accounts for all employees.
@@ -927,6 +933,28 @@ class FirestoreSyncService {
           name: 'FirestoreSyncService',
         );
       }
+
+      // Download schedule notes
+      final scheduleNotesRef = _scheduleNotesRef;
+      if (scheduleNotesRef != null) {
+        final notesSnapshot = await scheduleNotesRef.get();
+        for (final doc in notesSnapshot.docs) {
+          final data = doc.data();
+          if (data['localId'] == null) continue;
+          final now = DateTime.now().toIso8601String();
+          await db.insert('schedule_notes', {
+            'id': data['localId'],
+            'date': data['date'],
+            'note': data['note'],
+            'createdAt': data['createdAt'] ?? now,
+            'updatedAt': data['updatedAt'] ?? now,
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        log(
+          'Downloaded ${notesSnapshot.docs.length} schedule notes',
+          name: 'FirestoreSyncService',
+        );
+      }
     } catch (e) {
       log(
         'Error downloading data from cloud: $e',
@@ -1121,6 +1149,35 @@ class FirestoreSyncService {
         await batch.commit();
         log(
           'Uploaded ${shiftTemplateMaps.length} shift templates to cloud',
+          name: 'FirestoreSyncService',
+        );
+      }
+    }
+
+    // Sync all schedule notes
+    final scheduleNoteMaps = await db.query('schedule_notes');
+    if (scheduleNoteMaps.isNotEmpty) {
+      final scheduleNotesRef = _scheduleNotesRef;
+      if (scheduleNotesRef != null) {
+        final batch = _firestore.batch();
+        for (final noteMap in scheduleNoteMaps) {
+          final id = noteMap['id'] as int?;
+          if (id == null) continue;
+          
+          final date = noteMap['date'] as String;
+          final docRef = scheduleNotesRef.doc(date);
+          batch.set(docRef, {
+            'localId': id,
+            'date': date,
+            'note': noteMap['note'],
+            'createdAt': noteMap['createdAt'],
+            'updatedAt': noteMap['updatedAt'],
+            'managerUid': _managerUid,
+          });
+        }
+        await batch.commit();
+        log(
+          'Uploaded ${scheduleNoteMaps.length} schedule notes to cloud',
           name: 'FirestoreSyncService',
         );
       }
