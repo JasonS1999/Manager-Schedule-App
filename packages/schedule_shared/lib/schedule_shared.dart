@@ -1,4 +1,4 @@
-/// Shared models and services for Manager Schedule App and Employee Schedule App
+/// Shared models and services for ScheduleHQ Desktop and ScheduleHQ Android
 library schedule_shared;
 
 // Models
