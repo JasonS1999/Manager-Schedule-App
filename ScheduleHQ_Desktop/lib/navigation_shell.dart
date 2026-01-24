@@ -23,14 +23,15 @@ class _NavigationShellState extends State<NavigationShell> {
   bool _updateAvailable = false;
   bool _checkingUpdate = false;
 
-  final List<Widget> _pages = const [
-    SchedulePage(),
-    TimeOffPage(),
-    RosterPage(),
-    PtoVacTrackerPage(),
-    ApprovalQueuePage(),
-    AnalyticsPage(),
-    SettingsPage(),
+  // Use ValueKey to force rebuild when switching tabs
+  final List<Widget Function()> _pageBuilders = [
+    () => const SchedulePage(),
+    () => const TimeOffPage(),
+    () => const RosterPage(),
+    () => const PtoVacTrackerPage(),
+    () => const ApprovalQueuePage(),
+    () => const AnalyticsPage(),
+    () => const SettingsPage(),
   ];
 
   @override
@@ -164,7 +165,7 @@ class _NavigationShellState extends State<NavigationShell> {
               ],
             ),
 
-          Expanded(child: _pages[_index]),
+          Expanded(child: _pageBuilders[_index]()),
         ],
       ),
 

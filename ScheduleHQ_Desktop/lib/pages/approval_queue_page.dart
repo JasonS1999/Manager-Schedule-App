@@ -31,6 +31,13 @@ class _ApprovalQueuePageState extends State<ApprovalQueuePage> with SingleTicker
     return Scaffold(
       appBar: AppBar(
         title: const Text('Time-Off Requests'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.sync),
+            tooltip: 'Sync approved requests to calendar',
+            onPressed: _importApprovedRequests,
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -340,6 +347,32 @@ class _ApprovalQueuePageState extends State<ApprovalQueuePage> with SingleTicker
       return '${difference.inMinutes}m ago';
     } else {
       return 'Just now';
+    }
+  }
+
+  Future<void> _importApprovedRequests() async {
+    try {
+      final count = await _syncService.importApprovedTimeOffRequests();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(count > 0 
+              ? 'Imported $count approved request(s) to calendar' 
+              : 'No new requests to import'),
+            backgroundColor: count > 0 ? Colors.green : Colors.blue,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error importing requests: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 

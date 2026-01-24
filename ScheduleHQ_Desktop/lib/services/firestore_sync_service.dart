@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:schedulehq_desktop/database/app_database.dart';
+import 'package:schedulehq_desktop/database/time_off_dao.dart';
 import 'package:schedulehq_desktop/models/employee.dart';
 import 'package:schedulehq_desktop/models/shift.dart';
 import 'package:schedulehq_desktop/models/time_off_entry.dart';
@@ -732,10 +733,11 @@ class FirestoreSyncService {
 
   /// Approve a time-off request.
   Future<void> approveTimeOffRequest(String requestId) async {
-    final requestsRef = _timeOffRequestsRef;
+    // Use root-level timeOffRequests collection (where employee app writes)
+    final requestsRef = _firestore.collection('timeOffRequests');
     final timeOffRef = _timeOffRef;
 
-    if (requestsRef == null || timeOffRef == null) {
+    if (timeOffRef == null) {
       throw Exception('Not logged in');
     }
 
@@ -754,9 +756,24 @@ class FirestoreSyncService {
         'reviewedAt': FieldValue.serverTimestamp(),
       });
 
-      // Create approved time-off entry
+      // Insert into local database using TimeOffDao for proper model handling
+      final timeOffDao = TimeOffDao();
+      final entry = TimeOffEntry(
+        id: null,
+        employeeId: data['employeeLocalId'] as int,
+        date: DateTime.parse(data['date'] as String),
+        timeOffType: data['timeOffType'] as String,
+        hours: (data['hours'] as int?) ?? 8,
+        vacationGroupId: data['vacationGroupId'] as String?,
+        isAllDay: (data['isAllDay'] as bool?) ?? true,
+        startTime: data['startTime'] as String?,
+        endTime: data['endTime'] as String?,
+      );
+      final localId = await timeOffDao.insertTimeOff(entry);
+
+      // Create approved time-off entry in Firestore with the local ID
       await timeOffRef.doc(requestId).set({
-        'localId': null, // Will be set when synced to manager app
+        'localId': localId,
         'employeeLocalId': data['employeeLocalId'],
         'employeeUid': data['employeeUid'],
         'employeeName': data['employeeName'],
@@ -774,7 +791,7 @@ class FirestoreSyncService {
       });
 
       log(
-        'Approved time-off request: $requestId',
+        'Approved time-off request: $requestId (local ID: $localId)',
         name: 'FirestoreSyncService',
       );
     } catch (e) {
@@ -800,6 +817,76 @@ class FirestoreSyncService {
       log('Denied time-off request: $requestId', name: 'FirestoreSyncService');
     } catch (e) {
       log('Error denying request: $e', name: 'FirestoreSyncService');
+      rethrow;
+    }
+  }
+
+  /// Import all approved time-off requests from Firestore to local database.
+  /// This is useful for syncing requests that were approved before this feature existed.
+  Future<int> importApprovedTimeOffRequests() async {
+    // Use root-level timeOffRequests collection (where employee app writes)
+    final requestsRef = _firestore.collection('timeOffRequests');
+
+    try {
+      final snapshot = await requestsRef
+          .where('status', isEqualTo: 'approved')
+          .get();
+
+      final timeOffDao = TimeOffDao();
+      int importedCount = 0;
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        
+        // Skip if employeeLocalId is missing
+        if (data['employeeLocalId'] == null) {
+          log('Skipping request ${doc.id}: missing employeeLocalId', name: 'FirestoreSyncService');
+          continue;
+        }
+
+        // Check if this entry already exists in local database
+        final db = await AppDatabase.instance.db;
+        final existing = await db.query(
+          'time_off',
+          where: 'employeeId = ? AND date = ? AND timeOffType = ?',
+          whereArgs: [
+            data['employeeLocalId'],
+            data['date'],
+            data['timeOffType'],
+          ],
+        );
+
+        if (existing.isNotEmpty) {
+          log('Skipping request ${doc.id}: already exists locally', name: 'FirestoreSyncService');
+          continue;
+        }
+
+        // Insert the approved request into local database
+        final entry = TimeOffEntry(
+          id: null,
+          employeeId: data['employeeLocalId'] as int,
+          date: DateTime.parse(data['date'] as String),
+          timeOffType: data['timeOffType'] as String,
+          hours: (data['hours'] as int?) ?? 8,
+          vacationGroupId: data['vacationGroupId'] as String?,
+          isAllDay: (data['isAllDay'] as bool?) ?? true,
+          startTime: data['startTime'] as String?,
+          endTime: data['endTime'] as String?,
+        );
+        
+        final localId = await timeOffDao.insertTimeOff(entry);
+        
+        // Update the Firestore request with the local ID
+        await doc.reference.update({'localId': localId});
+        
+        importedCount++;
+        log('Imported approved request ${doc.id} (local ID: $localId)', name: 'FirestoreSyncService');
+      }
+
+      log('Imported $importedCount approved time-off requests', name: 'FirestoreSyncService');
+      return importedCount;
+    } catch (e) {
+      log('Error importing approved requests: $e', name: 'FirestoreSyncService');
       rethrow;
     }
   }

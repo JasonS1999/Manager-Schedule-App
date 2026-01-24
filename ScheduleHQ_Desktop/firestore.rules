@@ -65,13 +65,12 @@ service cloud.firestore {
         allow write: if request.auth != null && request.auth.uid == managerUid && isManager();
       }
       
-      // Time off requests - employees create own, manager approves/denies
+      // Time off requests - any authenticated user can create, manager approves/denies
       match /timeOffRequests/{docId} {
         allow read: if request.auth != null && 
                       (request.auth.uid == managerUid || 
                        resource.data.employeeUid == request.auth.uid);
-        allow create: if request.auth != null && 
-                         request.resource.data.employeeUid == request.auth.uid;
+        allow create: if request.auth != null;
         allow update: if request.auth != null && request.auth.uid == managerUid && isManager();
       }
       
@@ -128,13 +127,12 @@ service cloud.firestore {
       allow write: if isManager();
     }
     
-    // Time off requests - employees create own, managers update
+    // Time off requests - any authenticated user can create, managers update
     match /timeOffRequests/{docId} {
       allow read: if request.auth != null && (isManager() || 
                      resource.data.employeeEmail == request.auth.token.email ||
                      resource.data.employeeUid == request.auth.uid);
-      allow create: if request.auth != null && 
-                       request.resource.data.employeeEmail == request.auth.token.email;
+      allow create: if request.auth != null;
       allow update: if isManager();
     }
     

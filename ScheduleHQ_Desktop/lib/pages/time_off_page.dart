@@ -45,6 +45,13 @@ class _TimeOffPageState extends State<TimeOffPage> {
     _loadSettingsAndData();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reload data when page becomes visible (e.g., after navigating back)
+    _loadMonthEntries();
+  }
+
   Future<void> _loadSettingsAndData() async {
     final settings = await _settingsDao.getSettings();
     final employees = await _employeeDao.getEmployees();
