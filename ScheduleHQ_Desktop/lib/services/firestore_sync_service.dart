@@ -64,11 +64,8 @@ class FirestoreSyncService {
     return ref.collection('publishedSchedules');
   }
 
-  CollectionReference<Map<String, dynamic>>? get _timeOffRequestsRef {
-    final ref = _managerDocRef;
-    if (ref == null) return null;
-    return ref.collection('timeOffRequests');
-  }
+  // Note: timeOffRequests has been consolidated into timeOff collection
+  // All requests (pending, approved, denied) now live in timeOff
 
   CollectionReference<Map<String, dynamic>>? get _shiftRunnersRef {
     final ref = _managerDocRef;
@@ -599,6 +596,7 @@ class FirestoreSyncService {
 
   /// Sync a time-off entry to Firestore.
   /// Called when manager approves or enters time-off.
+  /// Handles both new entries and updates to existing ones.
   Future<void> syncTimeOffEntry(TimeOffEntry entry, Employee employee) async {
     final timeOffRef = _timeOffRef;
     if (timeOffRef == null) {
@@ -615,9 +613,23 @@ class FirestoreSyncService {
     }
 
     try {
+      // First, find and delete any existing docs for this entry
+      // This handles entries that might have different doc IDs (e.g., from Android app)
+      final existingDocs = await timeOffRef
+          .where('localId', isEqualTo: entry.id)
+          .where('employeeLocalId', isEqualTo: entry.employeeId)
+          .get();
+      
+      for (final doc in existingDocs.docs) {
+        await doc.reference.delete();
+        log('Deleted old time-off doc: ${doc.id}', name: 'FirestoreSyncService');
+      }
+
+      // Now create/update with consistent doc ID format
       final docRef = timeOffRef.doc('${entry.employeeId}_${entry.id}');
 
-      await docRef.set({
+      // Build the data map, only including endDate if it has a value
+      final data = <String, dynamic>{
         'localId': entry.id,
         'employeeLocalId': entry.employeeId,
         'employeeUid': employee.uid,
@@ -632,7 +644,14 @@ class FirestoreSyncService {
         'status': 'approved', // Manager-entered time-off is pre-approved
         'updatedAt': FieldValue.serverTimestamp(),
         'managerUid': _managerUid,
-      }, SetOptions(merge: true));
+      };
+      
+      // Only set endDate if we have one - don't overwrite with null
+      if (entry.endDate != null) {
+        data['endDate'] = entry.endDate!.toIso8601String().split('T')[0];
+      }
+
+      await docRef.set(data);
 
       log('Synced time-off entry to Firestore', name: 'FirestoreSyncService');
     } catch (e) {
@@ -642,8 +661,10 @@ class FirestoreSyncService {
   }
 
   /// Delete a time-off entry from Firestore.
+  /// Deletes from the unified timeOff collection.
   Future<void> deleteTimeOffEntry(int employeeId, int entryId) async {
     final timeOffRef = _timeOffRef;
+    
     if (timeOffRef == null) {
       log(
         'Cannot delete time-off - not logged in',
@@ -653,11 +674,28 @@ class FirestoreSyncService {
     }
 
     try {
+      // Delete from timeOff collection using the standard document ID format
       await timeOffRef.doc('${employeeId}_$entryId').delete();
       log(
         'Deleted time-off entry from Firestore',
         name: 'FirestoreSyncService',
       );
+      
+      // Also search for any docs with matching localId (for entries created from requests)
+      final matchingDocs = await timeOffRef
+          .where('localId', isEqualTo: entryId)
+          .where('employeeLocalId', isEqualTo: employeeId)
+          .get();
+      
+      for (final doc in matchingDocs.docs) {
+        if (doc.id != '${employeeId}_$entryId') {
+          await doc.reference.delete();
+          log(
+            'Deleted matching time-off doc: ${doc.id}',
+            name: 'FirestoreSyncService',
+          );
+        }
+      }
     } catch (e) {
       log('Error deleting time-off entry: $e', name: 'FirestoreSyncService');
       rethrow;
@@ -725,7 +763,10 @@ class FirestoreSyncService {
         }
 
         final docRef = timeOffRef.doc('${entry.employeeId}_${entry.id}');
-        batch.set(docRef, {
+        
+        // Build the data map, only including endDate if it has a value
+        // to avoid overwriting existing endDate in Firestore with null
+        final data = <String, dynamic>{
           'localId': entry.id,
           'employeeLocalId': entry.employeeId,
           'employeeUid': employee.uid,
@@ -740,7 +781,14 @@ class FirestoreSyncService {
           'status': 'approved',
           'updatedAt': FieldValue.serverTimestamp(),
           'managerUid': _managerUid,
-        }, SetOptions(merge: true));
+        };
+        
+        // Only set endDate if we have one - don't overwrite with null
+        if (entry.endDate != null) {
+          data['endDate'] = entry.endDate!.toIso8601String().split('T')[0];
+        }
+        
+        batch.set(docRef, data, SetOptions(merge: true));
         syncedCount++;
       }
 
@@ -762,15 +810,15 @@ class FirestoreSyncService {
   // ============== TIME-OFF REQUESTS (from employees) ==============
 
   /// Listen to pending time-off requests from employees.
+  /// Now uses the unified timeOff collection.
   Stream<List<TimeOffRequest>> watchPendingRequests() {
-    final requestsRef = _timeOffRequestsRef;
-    if (requestsRef == null) {
+    final timeOffRef = _timeOffRef;
+    if (timeOffRef == null) {
       return Stream.value([]);
     }
 
-    return requestsRef
+    return timeOffRef
         .where('status', isEqualTo: 'pending')
-        .orderBy('createdAt', descending: false)
         .snapshots()
         .map(
           (snapshot) => snapshot.docs
@@ -780,9 +828,8 @@ class FirestoreSyncService {
   }
 
   /// Approve a time-off request.
+  /// Updates the entry in the unified timeOff collection.
   Future<void> approveTimeOffRequest(String requestId) async {
-    // Use root-level timeOffRequests collection (where employee app writes)
-    final requestsRef = _firestore.collection('timeOffRequests');
     final timeOffRef = _timeOffRef;
 
     if (timeOffRef == null) {
@@ -790,7 +837,7 @@ class FirestoreSyncService {
     }
 
     try {
-      final requestDoc = await requestsRef.doc(requestId).get();
+      final requestDoc = await timeOffRef.doc(requestId).get();
 
       if (!requestDoc.exists) {
         throw Exception('Request not found');
@@ -798,18 +845,18 @@ class FirestoreSyncService {
 
       final data = requestDoc.data()!;
 
-      // Update request status
-      await requestDoc.reference.update({
-        'status': 'approved',
-        'reviewedAt': FieldValue.serverTimestamp(),
-      });
+      // Parse dates
+      final startDate = DateTime.parse(data['date'] as String);
+      final endDateStr = data['endDate'] as String?;
+      final endDate = endDateStr != null ? DateTime.parse(endDateStr) : null;
 
-      // Insert into local database using TimeOffDao for proper model handling
+      // Insert into local database as a single entry with date range
       final timeOffDao = TimeOffDao();
       final entry = TimeOffEntry(
         id: null,
         employeeId: data['employeeLocalId'] as int,
-        date: DateTime.parse(data['date'] as String),
+        date: startDate,
+        endDate: endDate,
         timeOffType: data['timeOffType'] as String,
         hours: (data['hours'] as int?) ?? 8,
         vacationGroupId: data['vacationGroupId'] as String?,
@@ -819,27 +866,17 @@ class FirestoreSyncService {
       );
       final localId = await timeOffDao.insertTimeOff(entry);
 
-      // Create approved time-off entry in Firestore with the local ID
-      await timeOffRef.doc(requestId).set({
+      // Update the existing document with approved status and local ID
+      await requestDoc.reference.update({
         'localId': localId,
-        'employeeLocalId': data['employeeLocalId'],
-        'employeeUid': data['employeeUid'],
-        'employeeName': data['employeeName'],
-        'date': data['date'],
-        'timeOffType': data['timeOffType'],
-        'hours': data['hours'],
-        'vacationGroupId': data['vacationGroupId'],
-        'isAllDay': data['isAllDay'],
-        'startTime': data['startTime'],
-        'endTime': data['endTime'],
         'status': 'approved',
-        'requestId': requestId,
-        'updatedAt': FieldValue.serverTimestamp(),
+        'reviewedAt': FieldValue.serverTimestamp(),
         'managerUid': _managerUid,
       });
 
+      final dayCount = endDate != null ? endDate.difference(startDate).inDays + 1 : 1;
       log(
-        'Approved time-off request: $requestId (local ID: $localId)',
+        'Approved time-off request: $requestId ($dayCount days, local ID: $localId)',
         name: 'FirestoreSyncService',
       );
     } catch (e) {
@@ -849,14 +886,15 @@ class FirestoreSyncService {
   }
 
   /// Deny a time-off request.
+  /// Updates the entry in the unified timeOff collection.
   Future<void> denyTimeOffRequest(String requestId, {String? reason}) async {
-    final requestsRef = _timeOffRequestsRef;
-    if (requestsRef == null) {
+    final timeOffRef = _timeOffRef;
+    if (timeOffRef == null) {
       throw Exception('Not logged in');
     }
 
     try {
-      await requestsRef.doc(requestId).update({
+      await timeOffRef.doc(requestId).update({
         'status': 'denied',
         'denialReason': reason,
         'reviewedAt': FieldValue.serverTimestamp(),
@@ -871,12 +909,16 @@ class FirestoreSyncService {
 
   /// Import all approved time-off requests from Firestore to local database.
   /// This is useful for syncing requests that were approved before this feature existed.
+  /// Now uses the unified timeOff collection.
   Future<int> importApprovedTimeOffRequests() async {
-    // Use root-level timeOffRequests collection (where employee app writes)
-    final requestsRef = _firestore.collection('timeOffRequests');
+    final timeOffRef = _timeOffRef;
+    if (timeOffRef == null) {
+      log('Cannot import - not logged in', name: 'FirestoreSyncService');
+      return 0;
+    }
 
     try {
-      final snapshot = await requestsRef
+      final snapshot = await timeOffRef
           .where('status', isEqualTo: 'approved')
           .get();
 
@@ -892,15 +934,20 @@ class FirestoreSyncService {
           continue;
         }
 
+        // Convert date to ISO format for comparison
+        String dateStr = data['date'] as String;
+        if (!dateStr.contains('T')) {
+          dateStr = DateTime.parse(dateStr).toIso8601String();
+        }
+
         // Check if this entry already exists in local database
         final db = await AppDatabase.instance.db;
         final existing = await db.query(
           'time_off',
-          where: 'employeeId = ? AND date = ? AND timeOffType = ?',
+          where: 'employeeId = ? AND date = ?',
           whereArgs: [
             data['employeeLocalId'],
-            data['date'],
-            data['timeOffType'],
+            dateStr,
           ],
         );
 
@@ -940,12 +987,13 @@ class FirestoreSyncService {
   }
 
   /// Get count of pending requests.
+  /// Now uses the unified timeOff collection.
   Future<int> getPendingRequestCount() async {
-    final requestsRef = _timeOffRequestsRef;
-    if (requestsRef == null) return 0;
+    final timeOffRef = _timeOffRef;
+    if (timeOffRef == null) return 0;
 
     try {
-      final snapshot = await requestsRef
+      final snapshot = await timeOffRef
           .where('status', isEqualTo: 'pending')
           .count()
           .get();
@@ -1030,39 +1078,68 @@ class FirestoreSyncService {
         name: 'FirestoreSyncService',
       );
 
-      // Download time-off
+      // Download time-off - deduplicate by (employeeId, date) and store with endDate
       final timeOffSnapshot = await timeOffRef.get();
-      int importedCount = 0;
+      
+      // Group by employeeId + date to remove duplicates
+      final Map<String, Map<String, dynamic>> uniqueTimeOff = {};
       for (final doc in timeOffSnapshot.docs) {
         final data = doc.data();
         final employeeLocalId = data['employeeLocalId'] as int?;
-        if (employeeLocalId == null) continue; // Must have employee ID
+        if (employeeLocalId == null) continue;
         
-        // Use localId if available, otherwise generate one from Firestore doc ID hash
-        int localId;
-        if (data['localId'] != null) {
-          localId = data['localId'] as int;
-        } else {
-          // Generate a unique ID from the Firestore document ID
-          // Use a high number range to avoid conflicts with existing local IDs
-          localId = doc.id.hashCode.abs() % 900000 + 100000;
+        final dateStr = data['date'] as String;
+        final key = '${employeeLocalId}_$dateStr';
+        
+        // Keep only the first entry for each employee+date combination
+        if (!uniqueTimeOff.containsKey(key)) {
+          // Use localId if available, otherwise generate one from the key
+          int localId;
+          if (data['localId'] != null) {
+            localId = data['localId'] as int;
+          } else {
+            // Generate a consistent ID from employeeId + date
+            localId = key.hashCode.abs() % 900000 + 100000;
+          }
+          
+          // Convert date to full ISO format for consistency with local storage
+          String fullDateStr = dateStr;
+          if (!fullDateStr.contains('T')) {
+            fullDateStr = DateTime.parse(fullDateStr).toIso8601String();
+          }
+          
+          // Handle endDate for multi-day entries
+          String? fullEndDateStr;
+          final endDateStr = data['endDate'] as String?;
+          if (endDateStr != null) {
+            fullEndDateStr = endDateStr.contains('T') 
+                ? endDateStr 
+                : DateTime.parse(endDateStr).toIso8601String();
+          }
+          
+          uniqueTimeOff[key] = {
+            'id': localId,
+            'employeeId': employeeLocalId,
+            'date': fullDateStr,
+            'endDate': fullEndDateStr,
+            'timeOffType': data['timeOffType'],
+            'hours': data['hours'],
+            'vacationGroupId': data['vacationGroupId'],
+            'isAllDay': (data['isAllDay'] ?? true) ? 1 : 0,
+            'startTime': data['startTime'],
+            'endTime': data['endTime'],
+          };
         }
-        
-        await db.insert('time_off', {
-          'id': localId,
-          'employeeId': employeeLocalId,
-          'date': data['date'],
-          'timeOffType': data['timeOffType'],
-          'hours': data['hours'],
-          'vacationGroupId': data['vacationGroupId'],
-          'isAllDay': (data['isAllDay'] ?? true) ? 1 : 0,
-          'startTime': data['startTime'],
-          'endTime': data['endTime'],
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-        importedCount++;
       }
+      
+      // Clear existing time-off and insert deduplicated entries
+      await db.delete('time_off');
+      for (final entry in uniqueTimeOff.values) {
+        await db.insert('time_off', entry, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      
       log(
-        'Downloaded $importedCount time-off entries',
+        'Downloaded ${uniqueTimeOff.length} time-off entries (deduplicated from ${timeOffSnapshot.docs.length})',
         name: 'FirestoreSyncService',
       );
 
@@ -1175,8 +1252,9 @@ class FirestoreSyncService {
         );
       }
 
-      // Import any approved time-off requests from root collection
-      await importApprovedTimeOffRequests();
+      // Note: We don't call importApprovedTimeOffRequests() here because
+      // the timeOff subcollection already contains all approved entries.
+      // That function is only needed for incremental syncs, not full downloads.
       
     } catch (e) {
       log(

@@ -61,6 +61,27 @@ class _TimeOffPageState extends State<TimeOffPage>
     return Scaffold(
       appBar: AppBar(
         title: const Text('Time Off'),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'cleanup') {
+                _cleanupDuplicates();
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'cleanup',
+                child: Row(
+                  children: [
+                    Icon(Icons.cleaning_services, size: 20),
+                    SizedBox(width: 8),
+                    Text('Remove Duplicates'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -83,13 +104,93 @@ class _TimeOffPageState extends State<TimeOffPage>
     );
   }
 
+  Future<void> _cleanupDuplicates() async {
+    if (_managerUid == null || _employeeUid == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove Duplicates'),
+        content: const Text(
+          'This will keep only one time-off entry per date and remove any duplicates. Continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove Duplicates'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      // Get all time-off entries for this employee
+      final snapshot = await FirebaseFirestore.instance
+          .collection('managers')
+          .doc(_managerUid)
+          .collection('timeOff')
+          .where('employeeUid', isEqualTo: _employeeUid)
+          .get();
+
+      // Group by date
+      final Map<String, List<DocumentSnapshot>> byDate = {};
+      for (final doc in snapshot.docs) {
+        final date = doc.data()['date'] as String?;
+        if (date != null) {
+          byDate.putIfAbsent(date, () => []).add(doc);
+        }
+      }
+
+      // Delete duplicates (keep the first one for each date)
+      int deletedCount = 0;
+      for (final entry in byDate.entries) {
+        if (entry.value.length > 1) {
+          // Keep the first, delete the rest
+          for (int i = 1; i < entry.value.length; i++) {
+            await entry.value[i].reference.delete();
+            deletedCount++;
+          }
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              deletedCount > 0
+                  ? 'Removed $deletedCount duplicate entries'
+                  : 'No duplicates found',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   Widget _buildRequestsTab() {
+    if (_managerUid == null) {
+      return const Center(child: Text('Manager not found'));
+    }
+    
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
-          .collection('timeOffRequests')
+          .collection('managers')
+          .doc(_managerUid)
+          .collection('timeOff')
           .where('employeeUid', isEqualTo: _employeeUid)
-          .orderBy('createdAt', descending: true)
-          .limit(50)
           .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -269,7 +370,8 @@ class _TimeOffPageState extends State<TimeOffPage>
           padding: const EdgeInsets.all(16),
           itemCount: entries.length,
           itemBuilder: (context, index) {
-            final data = entries[index].data() as Map<String, dynamic>;
+            final doc = entries[index];
+            final data = doc.data() as Map<String, dynamic>;
             final date = DateTime.parse(data['date'] as String);
             final type = data['timeOffType'] as String;
             final hours = data['hours'] as int? ?? 8;
@@ -277,18 +379,61 @@ class _TimeOffPageState extends State<TimeOffPage>
             final startTime = data['startTime'] as String?;
             final endTime = data['endTime'] as String?;
 
-            return Card(
-              margin: const EdgeInsets.only(bottom: 12),
-              child: ListTile(
-                leading: _buildTypeChip(type),
-                title: Text(
-                  DateFormat('EEEE, MMMM d').format(date),
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+            return Dismissible(
+              key: Key(doc.id),
+              direction: DismissDirection.endToStart,
+              background: Container(
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 20),
+                color: Colors.red,
+                child: const Icon(Icons.delete, color: Colors.white),
+              ),
+              confirmDismiss: (direction) async {
+                return await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Delete Time Off'),
+                    content: Text(
+                      'Delete time off for ${DateFormat('MMMM d').format(date)}?',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        style: TextButton.styleFrom(foregroundColor: Colors.red),
+                        child: const Text('Delete'),
+                      ),
+                    ],
+                  ),
+                ) ?? false;
+              },
+              onDismissed: (direction) async {
+                await doc.reference.delete();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Time off deleted'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              },
+              child: Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: ListTile(
+                  leading: _buildTypeChip(type),
+                  title: Text(
+                    DateFormat('EEEE, MMMM d').format(date),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(
+                    isAllDay ? 'All Day ($hours hours)' : '$startTime - $endTime',
+                  ),
+                  trailing: const Icon(Icons.check_circle, color: Colors.green),
                 ),
-                subtitle: Text(
-                  isAllDay ? 'All Day ($hours hours)' : '$startTime - $endTime',
-                ),
-                trailing: const Icon(Icons.check_circle, color: Colors.green),
               ),
             );
           },
@@ -552,11 +697,59 @@ class _TimeOffRequestSheetState extends State<_TimeOffRequestSheet> {
         final startDate = _selectedDate;
         final endDate = _vacationEndDate ?? _selectedDate;
 
+        // Check for existing time-off on any of the vacation days
+        if (widget.managerUid != null) {
+          for (var date = startDate;
+              !date.isAfter(endDate);
+              date = date.add(const Duration(days: 1))) {
+            final existing = await FirebaseFirestore.instance
+                .collection('managers')
+                .doc(widget.managerUid)
+                .collection('timeOff')
+                .where('employeeUid', isEqualTo: widget.employeeUid)
+                .where('date', isEqualTo: DateFormat('yyyy-MM-dd').format(date))
+                .limit(1)
+                .get();
+
+            if (existing.docs.isNotEmpty) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'You already have time off on ${DateFormat('MMM d').format(date)}',
+                    ),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+                setState(() => _submitting = false);
+              }
+              return;
+            }
+          }
+        }
+
         // Calculate number of days
         final dayCount = endDate.difference(startDate).inDays + 1;
 
-        // Create a single vacation request with date range
-        await FirebaseFirestore.instance.collection('timeOffRequests').add({
+        // Create a single vacation request with date range in manager's timeOff collection
+        if (widget.managerUid == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Error: Manager not found'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            setState(() => _submitting = false);
+          }
+          return;
+        }
+        
+        await FirebaseFirestore.instance
+            .collection('managers')
+            .doc(widget.managerUid)
+            .collection('timeOff')
+            .add({
           'employeeUid': widget.employeeUid,
           'employeeLocalId': widget.employeeLocalId,
           'employeeName': widget.employeeName,
@@ -586,6 +779,34 @@ class _TimeOffRequestSheetState extends State<_TimeOffRequestSheet> {
       }
 
       // For PTO and Day Off, single day handling
+      // Check if employee already has time-off on this date
+      if (widget.managerUid != null) {
+        final existing = await FirebaseFirestore.instance
+            .collection('managers')
+            .doc(widget.managerUid)
+            .collection('timeOff')
+            .where('employeeUid', isEqualTo: widget.employeeUid)
+            .where(
+              'date',
+              isEqualTo: DateFormat('yyyy-MM-dd').format(_selectedDate),
+            )
+            .limit(1)
+            .get();
+
+        if (existing.docs.isNotEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('You already have time off on this date'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+            setState(() => _submitting = false);
+          }
+          return;
+        }
+      }
+
       // Check if approval is required
       // PTO/DayOff require approval if 2+ entries already exist for that day
       bool requiresApproval = false;
@@ -611,8 +832,26 @@ class _TimeOffRequestSheetState extends State<_TimeOffRequestSheet> {
           ? (_isAllDay ? 8 : _calculateHoursFromTimeRange())
           : _hours;
 
-      // Create the request
-      await FirebaseFirestore.instance.collection('timeOffRequests').add({
+      // Check manager is available
+      if (widget.managerUid == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Error: Manager not found'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          setState(() => _submitting = false);
+        }
+        return;
+      }
+
+      // Create the request directly in manager's timeOff collection
+      await FirebaseFirestore.instance
+          .collection('managers')
+          .doc(widget.managerUid)
+          .collection('timeOff')
+          .add({
         'employeeUid': widget.employeeUid,
         'employeeLocalId': widget.employeeLocalId,
         'employeeName': widget.employeeName,
@@ -630,33 +869,10 @@ class _TimeOffRequestSheetState extends State<_TimeOffRequestSheet> {
             : '${_endTime.hour.toString().padLeft(2, '0')}:${_endTime.minute.toString().padLeft(2, '0')}',
         'status': requiresApproval ? 'pending' : 'approved',
         'createdAt': FieldValue.serverTimestamp(),
+        'managerUid': widget.managerUid,
       });
 
-      // If auto-approved, also create the time-off entry in manager's subcollection
-      if (!requiresApproval && widget.managerUid != null) {
-        await FirebaseFirestore.instance
-            .collection('managers')
-            .doc(widget.managerUid)
-            .collection('timeOff')
-            .add({
-          'employeeUid': widget.employeeUid,
-          'employeeLocalId': widget.employeeLocalId,
-          'employeeName': widget.employeeName,
-          'date': DateFormat('yyyy-MM-dd').format(_selectedDate),
-          'timeOffType': _selectedType == 'dayoff' ? 'sick' : _selectedType,
-          'hours': effectiveHours,
-          'isAllDay': _isAllDay,
-          'startTime': _isAllDay
-              ? null
-              : '${_startTime.hour.toString().padLeft(2, '0')}:${_startTime.minute.toString().padLeft(2, '0')}',
-          'endTime': _isAllDay
-              ? null
-              : '${_endTime.hour.toString().padLeft(2, '0')}:${_endTime.minute.toString().padLeft(2, '0')}',
-          'status': 'approved',
-          'managerUid': widget.managerUid,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      }
+      // Note: No need for duplicate entry - everything goes to managers/{uid}/timeOff now
 
       if (mounted) {
         Navigator.pop(context);

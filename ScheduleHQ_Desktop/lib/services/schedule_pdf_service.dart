@@ -8,21 +8,24 @@ import '../models/shift_runner.dart';
 import '../models/shift_type.dart';
 import '../models/schedule_note.dart';
 import '../models/store_hours.dart';
+import '../models/time_off_entry.dart';
 import '../widgets/schedule/schedule_view.dart';
 
 class SchedulePdfService {
   // Mid shift patterns: (startHour, startMinute, endHour, endMinute)
   static const List<(int, int, int, int)> _midShiftPatterns = [
-    (11, 0, 19, 0),  // 11-7
-    (12, 0, 20, 0),  // 12-8
-    (10, 0, 19, 0),  // 10-7
-    (11, 0, 20, 0),  // 11-8
+    (11, 0, 19, 0), // 11-7
+    (12, 0, 20, 0), // 12-8
+    (10, 0, 19, 0), // 10-7
+    (11, 0, 20, 0), // 11-8
   ];
 
   /// Check if a shift is an opening shift
   static bool _isOpenShift(ShiftPlaceholder shift, StoreHours storeHours) {
     final dayOfWeek = shift.start.weekday % 7; // Convert to 0=Sunday
-    final openTime = storeHours.getOpenTimeForDay(dayOfWeek == 0 ? DateTime.sunday : dayOfWeek);
+    final openTime = storeHours.getOpenTimeForDay(
+      dayOfWeek == 0 ? DateTime.sunday : dayOfWeek,
+    );
     final (openHour, openMinute) = StoreHours.parseTime(openTime);
     return shift.start.hour == openHour && shift.start.minute == openMinute;
   }
@@ -30,7 +33,9 @@ class SchedulePdfService {
   /// Check if a shift is a closing shift
   static bool _isCloseShift(ShiftPlaceholder shift, StoreHours storeHours) {
     final dayOfWeek = shift.start.weekday % 7;
-    final closeTime = storeHours.getCloseTimeForDay(dayOfWeek == 0 ? DateTime.sunday : dayOfWeek);
+    final closeTime = storeHours.getCloseTimeForDay(
+      dayOfWeek == 0 ? DateTime.sunday : dayOfWeek,
+    );
     final (closeHour, closeMinute) = StoreHours.parseTime(closeTime);
     return shift.end.hour == closeHour && shift.end.minute == closeMinute;
   }
@@ -62,29 +67,32 @@ class SchedulePdfService {
     int total = 0;
 
     for (final day in days) {
-      final dayShifts = shifts.where((s) =>
-        s.employeeId == employeeId &&
-        s.start.year == day.year &&
-        s.start.month == day.month &&
-        s.start.day == day.day
-      ).toList();
+      final dayShifts = shifts
+          .where(
+            (s) =>
+                s.employeeId == employeeId &&
+                s.start.year == day.year &&
+                s.start.month == day.month &&
+                s.start.day == day.day,
+          )
+          .toList();
 
       for (final shift in dayShifts) {
         final label = shift.text.toLowerCase().trim();
-        
+
         // Check for VAC/PTO
         if (label == 'vac' || label == 'pto' || label == 'eto') {
           vacPto++;
           continue;
         }
-        
+
         // Skip other non-shift entries (OFF, REQ OFF, etc.)
         if (_isLabelOnly(shift.text)) {
           continue;
         }
-        
+
         total++;
-        
+
         if (_isOpenShift(shift, storeHours)) {
           opens++;
         } else if (_isCloseShift(shift, storeHours)) {
@@ -105,7 +113,11 @@ class SchedulePdfService {
   }
 
   /// Build store info header for PDFs
-  static pw.Widget _buildStoreHeader(String title, {String? storeName, String? storeNsn}) {
+  static pw.Widget _buildStoreHeader(
+    String title, {
+    String? storeName,
+    String? storeNsn,
+  }) {
     // Build store info text inline
     String storeInfoText = '';
     if (storeName?.isNotEmpty ?? false) {
@@ -118,13 +130,13 @@ class SchedulePdfService {
         storeInfoText = storeNsn!;
       }
     }
-    
+
     // Build full header: "Title | Store Info"
     String fullTitle = title;
     if (storeInfoText.isNotEmpty) {
       fullTitle += ' | $storeInfoText';
     }
-    
+
     return pw.Text(
       fullTitle,
       style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold),
@@ -163,7 +175,11 @@ class SchedulePdfService {
         build: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.center,
           children: [
-            _buildStoreHeader(weekTitle, storeName: storeName, storeNsn: storeNsn),
+            _buildStoreHeader(
+              weekTitle,
+              storeName: storeName,
+              storeNsn: storeNsn,
+            ),
             pw.SizedBox(height: 10),
             pw.Expanded(
               child: pw.FittedBox(
@@ -200,6 +216,8 @@ class SchedulePdfService {
     StoreHours? storeHours,
     String? storeName,
     String? storeNsn,
+    List<Employee> trackedEmployees = const [],
+    List<TimeOffEntry> timeOffEntries = const [],
   }) async {
     final pdf = pw.Document();
     final effectiveStoreHours = storeHours ?? StoreHours.defaults();
@@ -237,6 +255,19 @@ class SchedulePdfService {
       if (weeks.length >= 6) break;
     }
 
+    // If only 4 weeks, prepend the last week of the previous month for a 5-week export
+    if (weeks.length == 4) {
+      final previousWeekStart = startDate.subtract(const Duration(days: 7));
+      final previousWeek = List.generate(
+        7,
+        (i) => previousWeekStart.add(Duration(days: i)),
+      );
+      weeks.insert(0, previousWeek);
+    }
+
+    // Build flat list of all days for stats calculation
+    final allDays = weeks.expand((week) => week).toList();
+
     final sortedEmployees = _sortEmployees(employees, jobCodeSettings);
 
     // Stack week tables vertically on a single page with scaling
@@ -247,27 +278,50 @@ class SchedulePdfService {
         build: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.center,
           children: [
-            _buildStoreHeader(managerTitle, storeName: storeName, storeNsn: storeNsn),
+            _buildStoreHeader(
+              managerTitle,
+              storeName: storeName,
+              storeNsn: storeNsn,
+            ),
             pw.SizedBox(height: 10),
             pw.Expanded(
-              child: pw.FittedBox(
-                fit: pw.BoxFit.contain,
-                alignment: pw.Alignment.topCenter,
-                child: pw.Container(
-                  decoration: pw.BoxDecoration(
-                    border: pw.Border.all(color: PdfColors.black, width: 1.5),
-                  ),
+              child: pw.Center(
+                child: pw.FittedBox(
+                  fit: pw.BoxFit.contain,
+                  alignment: pw.Alignment.topCenter,
                   child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: _buildMonthlyStackedWeekWidgets(
-                      employees: sortedEmployees,
-                      weeks: weeks,
-                      targetMonth: month,
-                      shifts: shifts,
-                      shiftRunners: shiftRunners,
-                      shiftTypes: shiftTypes,
-                      jobCodeSettings: jobCodeSettings,
-                    ),
+                    children: [
+                      pw.Container(
+                        decoration: pw.BoxDecoration(
+                          border: pw.Border.all(
+                            color: PdfColors.black,
+                            width: 1.5,
+                          ),
+                        ),
+                        child: pw.Column(
+                          crossAxisAlignment: pw.CrossAxisAlignment.start,
+                          children: _buildMonthlyStackedWeekWidgets(
+                            employees: sortedEmployees,
+                            weeks: weeks,
+                            targetMonth: month,
+                            shifts: shifts,
+                            shiftRunners: shiftRunners,
+                            shiftTypes: shiftTypes,
+                            jobCodeSettings: jobCodeSettings,
+                          ),
+                        ),
+                      ),
+                      // Add stats table if there are tracked employees (outside the bordered container)
+                      if (trackedEmployees.isNotEmpty)
+                        _buildMonthlyStatsTable(
+                          employees: trackedEmployees,
+                          days: allDays,
+                          shifts: shifts,
+                          storeHours: effectiveStoreHours,
+                          jobCodeSettings: jobCodeSettings,
+                          timeOffEntries: timeOffEntries,
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -312,7 +366,11 @@ class SchedulePdfService {
         build: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.center,
           children: [
-            _buildStoreHeader(weekTitle, storeName: storeName, storeNsn: storeNsn),
+            _buildStoreHeader(
+              weekTitle,
+              storeName: storeName,
+              storeNsn: storeNsn,
+            ),
             pw.SizedBox(height: 6),
             pw.Expanded(
               child: pw.FittedBox(
@@ -379,25 +437,28 @@ class SchedulePdfService {
     // Build all days to display - only include weeks that contain at least one day in the target month
     final days = <DateTime>[];
     var currentDate = startDate;
-    
+
     while (true) {
       // Build a week (Sunday to Saturday)
-      final weekDays = List.generate(7, (i) => currentDate.add(Duration(days: i)));
-      
+      final weekDays = List.generate(
+        7,
+        (i) => currentDate.add(Duration(days: i)),
+      );
+
       // Check if this week contains any days in the target month
       final hasTargetMonthDay = weekDays.any((d) => d.month == month);
-      
+
       if (!hasTargetMonthDay) {
         // This week has no days in the target month, stop
         break;
       }
-      
+
       // Add all days from this week
       days.addAll(weekDays);
-      
+
       // Move to next week
       currentDate = currentDate.add(const Duration(days: 7));
-      
+
       if (days.length > 42) break; // Safety limit (6 weeks)
     }
 
@@ -410,7 +471,11 @@ class SchedulePdfService {
         build: (context) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.center,
           children: [
-            _buildStoreHeader(managerTitle, storeName: storeName, storeNsn: storeNsn),
+            _buildStoreHeader(
+              managerTitle,
+              storeName: storeName,
+              storeNsn: storeNsn,
+            ),
             pw.SizedBox(height: 6),
             pw.Expanded(
               child: pw.FittedBox(
@@ -448,15 +513,18 @@ class SchedulePdfService {
     final children = <pw.Widget>[];
 
     for (final week in weeks) {
-      // Skip weeks that are completely outside the target month
-      final hasAnyTargetMonthDay = week.any((d) => d.month == targetMonth);
-      if (!hasAnyTargetMonthDay) continue;
+      // Check if week has any days in the target month
+      final hasTargetMonthDay = week.any((d) => d.month == targetMonth);
 
+      // If week is entirely from previous month, don't gray out any cells
+      final effectiveTargetMonth = hasTargetMonthDay ? targetMonth : null;
+
+      // Render all weeks passed in (caller determines which weeks to include)
       children.add(
         _buildWeekTable(
           employees: employees,
           week: week,
-          targetMonth: targetMonth,
+          targetMonth: effectiveTargetMonth,
           shifts: shifts,
           shiftRunners: shiftRunners,
           shiftTypes: shiftTypes,
@@ -557,7 +625,8 @@ class SchedulePdfService {
     // Helper to get effective group key
     String getGroupKey(String jobCode) {
       final group = jobCodeGroupMap[jobCode.toLowerCase()];
-      return group ?? '__ungrouped_$jobCode'; // Ungrouped codes are their own group
+      return group ??
+          '__ungrouped_$jobCode'; // Ungrouped codes are their own group
     }
 
     String? lastGroupKey;
@@ -572,10 +641,7 @@ class SchedulePdfService {
           pw.TableRow(
             children: List.generate(
               10,
-              (_) => pw.Container(
-                height: 6,
-                color: PdfColors.white,
-              ),
+              (_) => pw.Container(height: 6, color: PdfColors.white),
             ),
           ),
         );
@@ -593,11 +659,24 @@ class SchedulePdfService {
           decoration: const pw.BoxDecoration(color: PdfColors.white),
           children: [
             _padCell(
-              pw.Text(emp.name, style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
+              pw.Text(
+                emp.name,
+                style: pw.TextStyle(
+                  fontSize: 8,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
               align: pw.Alignment.centerLeft,
             ),
             _padCell(
-              pw.Text(jobCode, style: pw.TextStyle(fontSize: 8, fontStyle: pw.FontStyle.italic, fontWeight: pw.FontWeight.bold)),
+              pw.Text(
+                jobCode,
+                style: pw.TextStyle(
+                  fontSize: 8,
+                  fontStyle: pw.FontStyle.italic,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
               align: pw.Alignment.centerLeft,
             ),
             ...week.asMap().entries.map((entry) {
@@ -631,7 +710,13 @@ class SchedulePdfService {
               );
             }),
             _padCell(
-              pw.Text(hours == 0 ? '' : hours.toString(), style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
+              pw.Text(
+                hours == 0 ? '' : hours.toString(),
+                style: pw.TextStyle(
+                  fontSize: 8,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
               align: pw.Alignment.center,
             ),
           ],
@@ -646,20 +731,21 @@ class SchedulePdfService {
         left: const pw.BorderSide(color: PdfColors.black, width: 1.5),
         right: const pw.BorderSide(color: PdfColors.black, width: 1.5),
         bottom: const pw.BorderSide(color: PdfColors.black, width: 1.5),
-        horizontalInside: const pw.BorderSide(color: PdfColors.grey400, width: 0.4),
-        verticalInside: const pw.BorderSide(color: PdfColors.grey400, width: 0.4),
+        horizontalInside: const pw.BorderSide(
+          color: PdfColors.grey400,
+          width: 0.4,
+        ),
+        verticalInside: const pw.BorderSide(
+          color: PdfColors.grey400,
+          width: 0.4,
+        ),
       ),
       defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
       children: dataRows,
     );
 
     // Return header and data tables stacked vertically
-    return pw.Column(
-      children: [
-        headerTable,
-        dataTable,
-      ],
-    );
+    return pw.Column(children: [headerTable, dataTable]);
   }
 
   /// Get shift runner color for an employee on a specific day
@@ -832,12 +918,12 @@ class SchedulePdfService {
     final orderByCode = <String, int>{};
     final groupByCode = <String, String?>{};
     final groupOrder = <String, int>{};
-    
+
     for (final s in jobCodeSettings) {
       orderByCode[s.code.toLowerCase()] = s.sortOrder;
       groupByCode[s.code.toLowerCase()] = s.sortGroup;
     }
-    
+
     // Calculate group order based on the minimum sortOrder of job codes in each group
     final groupMinOrder = <String, int>{};
     for (final s in jobCodeSettings) {
@@ -860,7 +946,7 @@ class SchedulePdfService {
       final bGroup = groupByCode[bCode];
       final aOrder = orderByCode[aCode] ?? 999999;
       final bOrder = orderByCode[bCode] ?? 999999;
-      
+
       // If both are in the same group (or both ungrouped), sort by job code order then name
       if (aGroup == bGroup) {
         final byOrder = aOrder.compareTo(bOrder);
@@ -869,23 +955,27 @@ class SchedulePdfService {
         if (byCode != 0) return byCode;
         return a.name.toLowerCase().compareTo(b.name.toLowerCase());
       }
-      
+
       // If one is grouped and one isn't, use the group's min order vs the ungrouped order
-      final aEffectiveOrder = aGroup != null ? (groupOrder[aGroup] ?? aOrder) : aOrder;
-      final bEffectiveOrder = bGroup != null ? (groupOrder[bGroup] ?? bOrder) : bOrder;
-      
+      final aEffectiveOrder = aGroup != null
+          ? (groupOrder[aGroup] ?? aOrder)
+          : aOrder;
+      final bEffectiveOrder = bGroup != null
+          ? (groupOrder[bGroup] ?? bOrder)
+          : bOrder;
+
       // Sort by effective order
       final byEffective = aEffectiveOrder.compareTo(bEffectiveOrder);
       if (byEffective != 0) return byEffective;
-      
+
       // If same effective order, grouped items come after ungrouped at that position
       if (aGroup != null && bGroup == null) return 1;
       if (aGroup == null && bGroup != null) return -1;
-      
+
       // Both are in different groups with same min order - use individual order
       final byOrder = aOrder.compareTo(bOrder);
       if (byOrder != 0) return byOrder;
-      
+
       return a.name.toLowerCase().compareTo(b.name.toLowerCase());
     });
     return list;
@@ -974,7 +1064,7 @@ class SchedulePdfService {
       }
       jobCodeGroups[jobCode]!.add(emp);
     }
-    
+
     // Determine where gaps should go (between different super groups)
     // A super group is defined by sortGroup, or if ungrouped, the job code itself
     final gapAfterJobCode = <String, bool>{};
@@ -983,15 +1073,18 @@ class SchedulePdfService {
       final nextCode = jobCodeOrder[i + 1];
       final currentGroup = jobCodeGroupMap[currentCode.toLowerCase()];
       final nextGroup = jobCodeGroupMap[nextCode.toLowerCase()];
-      
+
       // Add gap if:
       // 1. Current is ungrouped (any ungrouped code gets a gap after)
       // 2. Next is ungrouped (gap before ungrouped)
       // 3. They're in different groups
-      final needsGap = currentGroup == null || nextGroup == null || currentGroup != nextGroup;
+      final needsGap =
+          currentGroup == null ||
+          nextGroup == null ||
+          currentGroup != nextGroup;
       gapAfterJobCode[currentCode] = needsGap;
     }
-    
+
     // Count actual gaps needed
     final numGaps = gapAfterJobCode.values.where((v) => v).length;
 
@@ -1053,15 +1146,17 @@ class SchedulePdfService {
 
       // Determine if this job code is at the edge of a super group
       // First in super group: either i == 0 OR the previous job code has a gap after it
-      final isFirstJobCodeInSuperGroup = i == 0 || gapAfterJobCode[jobCodeOrder[i - 1]] == true;
+      final isFirstJobCodeInSuperGroup =
+          i == 0 || gapAfterJobCode[jobCodeOrder[i - 1]] == true;
       // Last in super group: there's a gap after this job code (or it's the last one)
-      final isLastJobCodeInSuperGroup = gapAfterJobCode[jobCode] == true || i == jobCodeOrder.length - 1;
+      final isLastJobCodeInSuperGroup =
+          gapAfterJobCode[jobCode] == true || i == jobCodeOrder.length - 1;
 
       // Create a cell for each employee with the job code text
       for (int j = 0; j < groupSize; j++) {
         final isFirstInJobCode = j == 0;
         final isLastInJobCode = j == groupSize - 1;
-        
+
         // Thick left border only on the very first cell of the super group
         final needsThickLeft = isFirstJobCodeInSuperGroup && isFirstInJobCode;
         // Thick right border only on the very last cell of the super group
@@ -1137,14 +1232,16 @@ class SchedulePdfService {
       final useDarkText = _isLightColor(jobCodeColor);
 
       // Determine if this job code is at the edge of a super group
-      final isFirstJobCodeInSuperGroup = i == 0 || gapAfterJobCode[jobCodeOrder[i - 1]] == true;
-      final isLastJobCodeInSuperGroup = gapAfterJobCode[jobCode] == true || i == jobCodeOrder.length - 1;
+      final isFirstJobCodeInSuperGroup =
+          i == 0 || gapAfterJobCode[jobCodeOrder[i - 1]] == true;
+      final isLastJobCodeInSuperGroup =
+          gapAfterJobCode[jobCode] == true || i == jobCodeOrder.length - 1;
 
       for (int j = 0; j < emps.length; j++) {
         final emp = emps[j];
         final isFirstInJobCode = j == 0;
         final isLastInJobCode = j == emps.length - 1;
-        
+
         // Thick left border only on the very first cell of the super group
         final needsThickLeft = isFirstJobCodeInSuperGroup && isFirstInJobCode;
         // Thick right border only on the very last cell of the super group
@@ -1248,11 +1345,17 @@ class SchedulePdfService {
             children: [
               pw.Text(
                 dayNames[day.weekday % 7],
-                style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 6),
+                style: pw.TextStyle(
+                  fontWeight: pw.FontWeight.bold,
+                  fontSize: 6,
+                ),
               ),
               pw.Text(
                 '${day.day}',
-                style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 6),
+                style: pw.TextStyle(
+                  fontWeight: pw.FontWeight.bold,
+                  fontSize: 6,
+                ),
               ),
             ],
           ),
@@ -1266,16 +1369,18 @@ class SchedulePdfService {
       for (int i = 0; i < jobCodeOrder.length; i++) {
         final jobCode = jobCodeOrder[i];
         final emps = jobCodeGroups[jobCode]!;
-        
+
         // Determine if this job code is at the edge of a super group
-        final isFirstJobCodeInSuperGroup = i == 0 || gapAfterJobCode[jobCodeOrder[i - 1]] == true;
-        final isLastJobCodeInSuperGroup = gapAfterJobCode[jobCode] == true || i == jobCodeOrder.length - 1;
+        final isFirstJobCodeInSuperGroup =
+            i == 0 || gapAfterJobCode[jobCodeOrder[i - 1]] == true;
+        final isLastJobCodeInSuperGroup =
+            gapAfterJobCode[jobCode] == true || i == jobCodeOrder.length - 1;
 
         for (int empIdx = 0; empIdx < emps.length; empIdx++) {
           final emp = emps[empIdx];
           final isFirstInJobCode = empIdx == 0;
           final isLastInJobCode = empIdx == emps.length - 1;
-          
+
           // Thick left border only on the very first cell of the super group
           final needsThickLeft = isFirstJobCodeInSuperGroup && isFirstInJobCode;
           // Thick right border only on the very last cell of the super group
@@ -1405,6 +1510,245 @@ class SchedulePdfService {
     await Printing.sharePdf(bytes: pdfBytes, filename: filename);
   }
 
+  /// Build monthly stats table for tracked employees
+  /// Shows Opens, Mids, Closes, Shifts, PTO Hours, and Vacation for each employee
+  static pw.Widget _buildMonthlyStatsTable({
+    required List<Employee> employees,
+    required List<DateTime> days,
+    required List<ShiftPlaceholder> shifts,
+    required StoreHours storeHours,
+    required List<JobCodeSettings> jobCodeSettings,
+    List<TimeOffEntry> timeOffEntries = const [],
+  }) {
+    if (employees.isEmpty) return pw.SizedBox.shrink();
+
+    final headerStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 7,
+    );
+    final cellStyle = const pw.TextStyle(fontSize: 7);
+    final headerColor = PdfColor.fromHex('#FFEB3B'); // Yellow like main table
+
+    // Column widths: Name, Position, Opens, Mids, Closes, Shifts, PTO Hrs, VAC
+    final colWidths = <int, pw.TableColumnWidth>{
+      0: const pw.FixedColumnWidth(70), // Name
+      1: const pw.FixedColumnWidth(70), // Position
+      2: const pw.FixedColumnWidth(40), // Opens
+      3: const pw.FixedColumnWidth(40), // Mids
+      4: const pw.FixedColumnWidth(40), // Closes
+      5: const pw.FixedColumnWidth(40), // Shifts
+      6: const pw.FixedColumnWidth(45), // PTO Hrs
+      7: const pw.FixedColumnWidth(40), // VAC
+    };
+
+    // Pre-calculate stats for all tracked employees
+    final allStats = <int, Map<String, dynamic>>{};
+    for (final emp in employees) {
+      if (emp.id != null) {
+        final stats = _getEmployeeShiftStats(
+          employeeId: emp.id!,
+          days: days,
+          shifts: shifts,
+          storeHours: storeHours,
+        );
+
+        // Calculate PTO hours and vacation days from actual time off entries
+        int ptoHours = 0;
+        int vacDays = 0;
+
+        // Filter time off entries for this employee within the date range
+        final firstDay = days.isNotEmpty ? days.first : DateTime.now();
+        final lastDay = days.isNotEmpty ? days.last : DateTime.now();
+
+        for (final entry in timeOffEntries) {
+          if (entry.employeeId != emp.id) continue;
+
+          // Check if the entry falls within our date range
+          if (entry.date.isBefore(firstDay) || entry.date.isAfter(lastDay)) {
+            continue;
+          }
+
+          final type = entry.timeOffType.toLowerCase();
+          if (type == 'pto') {
+            ptoHours += entry.hours;
+          } else if (type == 'vac') {
+            vacDays++;
+          }
+        }
+
+        allStats[emp.id!] = {
+          ...stats,
+          'ptoHours': ptoHours,
+          'vacDays': vacDays,
+        };
+      }
+    }
+
+    final rows = <pw.TableRow>[];
+
+    // Header row
+    rows.add(
+      pw.TableRow(
+        decoration: pw.BoxDecoration(color: headerColor),
+        children: [
+          _padCell(
+            pw.Text('Name', style: headerStyle),
+            align: pw.Alignment.centerLeft,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('Position', style: headerStyle),
+            align: pw.Alignment.centerLeft,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('Opens', style: headerStyle),
+            align: pw.Alignment.center,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('Mids', style: headerStyle),
+            align: pw.Alignment.center,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('Closes', style: headerStyle),
+            align: pw.Alignment.center,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('Shifts', style: headerStyle),
+            align: pw.Alignment.center,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('PTO Hrs', style: headerStyle),
+            align: pw.Alignment.center,
+            bgColor: headerColor,
+          ),
+          _padCell(
+            pw.Text('VAC', style: headerStyle),
+            align: pw.Alignment.center,
+            bgColor: headerColor,
+          ),
+        ],
+      ),
+    );
+
+    // Data rows for each employee
+    for (final emp in employees) {
+      final stats =
+          allStats[emp.id] ??
+          {
+            'opens': 0,
+            'mids': 0,
+            'closes': 0,
+            'total': 0,
+            'ptoHours': 0,
+            'vacDays': 0,
+          };
+
+      // Get job code display text
+      String jobCode = emp.jobCode;
+      for (final jc in jobCodeSettings) {
+        if (jc.code.toLowerCase() == emp.jobCode.toLowerCase()) {
+          jobCode = jc.code;
+          break;
+        }
+      }
+
+      rows.add(
+        pw.TableRow(
+          children: [
+            _padCell(
+              pw.Text(
+                emp.name,
+                style: pw.TextStyle(
+                  fontSize: 7,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              align: pw.Alignment.centerLeft,
+            ),
+            _padCell(
+              pw.Text(
+                jobCode,
+                style: pw.TextStyle(
+                  fontSize: 7,
+                  fontStyle: pw.FontStyle.italic,
+                ),
+              ),
+              align: pw.Alignment.centerLeft,
+            ),
+            _padCell(
+              pw.Text('${stats['opens']}', style: cellStyle),
+              align: pw.Alignment.center,
+            ),
+            _padCell(
+              pw.Text('${stats['mids']}', style: cellStyle),
+              align: pw.Alignment.center,
+            ),
+            _padCell(
+              pw.Text('${stats['closes']}', style: cellStyle),
+              align: pw.Alignment.center,
+            ),
+            _padCell(
+              pw.Text('${stats['total']}', style: cellStyle),
+              align: pw.Alignment.center,
+            ),
+            _padCell(
+              pw.Text('${stats['ptoHours']}', style: cellStyle),
+              align: pw.Alignment.center,
+            ),
+            _padCell(
+              pw.Text('${stats['vacDays']}', style: cellStyle),
+              align: pw.Alignment.center,
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Header table (no internal borders, thin outer border)
+    final headerTable = pw.Table(
+      columnWidths: colWidths,
+      border: pw.TableBorder(
+        left: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+        right: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+        top: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+        bottom: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+      ),
+      defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+      children: [rows.first],
+    );
+
+    // Data table (with internal borders, thin outer border)
+    final dataTable = pw.Table(
+      columnWidths: colWidths,
+      border: pw.TableBorder(
+        left: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+        right: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+        bottom: const pw.BorderSide(color: PdfColors.black, width: 0.5),
+        horizontalInside: const pw.BorderSide(
+          color: PdfColors.grey400,
+          width: 0.4,
+        ),
+        verticalInside: const pw.BorderSide(
+          color: PdfColors.grey400,
+          width: 0.4,
+        ),
+      ),
+      defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+      children: rows.skip(1).toList(),
+    );
+
+    return pw.Center(
+      child: pw.Column(
+        children: [pw.SizedBox(height: 8), headerTable, dataTable],
+      ),
+    );
+  }
+
   /// Build shift statistics table (transposed - employees as columns, stats as rows)
   static pw.Widget _buildShiftStatsTable({
     required List<Employee> employees,
@@ -1485,21 +1829,23 @@ class SchedulePdfService {
         pw.TableRow(
           children: [
             _padCell(
-              pw.Text(
-                statLabels[i],
-                style: isTotal ? headerStyle : cellStyle,
-              ),
+              pw.Text(statLabels[i], style: isTotal ? headerStyle : cellStyle),
               align: pw.Alignment.centerLeft,
             ),
             ...employees.map((emp) {
-              final stats = allStats[emp.id] ?? {'opens': 0, 'mids': 0, 'closes': 0, 'vacPto': 0, 'total': 0};
+              final stats =
+                  allStats[emp.id] ??
+                  {'opens': 0, 'mids': 0, 'closes': 0, 'vacPto': 0, 'total': 0};
               final value = stats[statKeys[i]] ?? 0;
               return _padCell(
                 pw.Text(
                   '$value',
-                  style: isTotal 
-                    ? pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)
-                    : cellStyle,
+                  style: isTotal
+                      ? pw.TextStyle(
+                          fontSize: 9,
+                          fontWeight: pw.FontWeight.bold,
+                        )
+                      : cellStyle,
                 ),
                 align: pw.Alignment.center,
               );
@@ -1529,18 +1875,19 @@ class SchedulePdfService {
         left: const pw.BorderSide(color: PdfColors.black, width: 1.5),
         right: const pw.BorderSide(color: PdfColors.black, width: 1.5),
         bottom: const pw.BorderSide(color: PdfColors.black, width: 1.5),
-        horizontalInside: const pw.BorderSide(color: PdfColors.grey400, width: 0.4),
-        verticalInside: const pw.BorderSide(color: PdfColors.grey400, width: 0.4),
+        horizontalInside: const pw.BorderSide(
+          color: PdfColors.grey400,
+          width: 0.4,
+        ),
+        verticalInside: const pw.BorderSide(
+          color: PdfColors.grey400,
+          width: 0.4,
+        ),
       ),
       defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
       children: rows.skip(1).toList(),
     );
 
-    return pw.Column(
-      children: [
-        headerTable,
-        dataTable,
-      ],
-    );
+    return pw.Column(children: [headerTable, dataTable]);
   }
 }

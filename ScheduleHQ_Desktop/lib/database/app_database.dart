@@ -251,6 +251,14 @@ Future<void> _onCreate(Database db, int version) async {
     ON employee_weekly_templates(employeeId)
   ''');
 
+  await db.execute('''
+    CREATE TABLE tracked_employees (
+      employeeId INTEGER PRIMARY KEY,
+      sortOrder INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY(employeeId) REFERENCES employees(id) ON DELETE CASCADE
+    )
+  ''');
+
   log("✅ Schema created", name: 'AppDatabase');
 } 
 
@@ -305,7 +313,7 @@ class AppDatabase {
 
     _db = await openDatabase(
       path,
-      version: 23,
+      version: 25,
       onCreate: _onCreate,
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -676,6 +684,24 @@ class AppDatabase {
           } catch (_) {
             // Column may already exist
           }
+        }
+        if (oldVersion < 24) {
+          // Add endDate column to time_off for multi-day vacation entries
+          try {
+            await db.execute('ALTER TABLE time_off ADD COLUMN endDate TEXT');
+          } catch (_) {
+            // Column may already exist
+          }
+        }
+        if (oldVersion < 25) {
+          // Add tracked_employees table for PDF stats tracking
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS tracked_employees (
+              employeeId INTEGER PRIMARY KEY,
+              sortOrder INTEGER NOT NULL DEFAULT 0,
+              FOREIGN KEY(employeeId) REFERENCES employees(id) ON DELETE CASCADE
+            )
+          ''');
         }
       },
     );

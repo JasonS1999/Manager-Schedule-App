@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'pages/schedule_page.dart';
-import 'pages/time_off_page.dart';
 import 'pages/roster_page.dart';
 import 'package:schedulehq_desktop/pages/settings_page.dart';
 import 'pages/pto_vac_tracker_page.dart';
@@ -26,7 +25,6 @@ class _NavigationShellState extends State<NavigationShell> {
   // Use ValueKey to force rebuild when switching tabs
   final List<Widget Function()> _pageBuilders = [
     () => const SchedulePage(),
-    () => const TimeOffPage(),
     () => const RosterPage(),
     () => const PtoVacTrackerPage(),
     () => const ApprovalQueuePage(),
@@ -132,10 +130,6 @@ class _NavigationShellState extends State<NavigationShell> {
                         label: Text("Schedule"),
                       ),
                       NavigationRailDestination(
-                        icon: Icon(Icons.beach_access),
-                        label: Text("Time Off"),
-                      ),
-                      NavigationRailDestination(
                         icon: Icon(Icons.people),
                         label: Text("Roster"),
                       ),
@@ -145,7 +139,7 @@ class _NavigationShellState extends State<NavigationShell> {
                       ),
                       NavigationRailDestination(
                         icon: Icon(Icons.approval),
-                        label: Text("Approvals"),
+                        label: Text("Time Off"),
                       ),
                       NavigationRailDestination(
                         icon: Icon(Icons.analytics),
@@ -186,10 +180,6 @@ class _NavigationShellState extends State<NavigationShell> {
                       label: "Schedule",
                     ),
                     NavigationDestination(
-                      icon: Icon(Icons.beach_access),
-                      label: "Time Off",
-                    ),
-                    NavigationDestination(
                       icon: Icon(Icons.people),
                       label: "Roster",
                     ),
@@ -199,7 +189,7 @@ class _NavigationShellState extends State<NavigationShell> {
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.approval),
-                      label: "Approvals",
+                      label: "Time Off",
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.analytics),

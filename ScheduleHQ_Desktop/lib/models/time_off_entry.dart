@@ -2,6 +2,7 @@ class TimeOffEntry {
   final int? id;
   final int employeeId;
   final DateTime date;
+  final DateTime? endDate; // For multi-day entries (vacation)
   final String timeOffType; // pto / vac / sick
   final int hours;
   final String? vacationGroupId;
@@ -13,6 +14,7 @@ class TimeOffEntry {
     required this.id,
     required this.employeeId,
     required this.date,
+    this.endDate,
     required this.timeOffType,
     required this.hours,
     this.vacationGroupId,
@@ -26,6 +28,7 @@ class TimeOffEntry {
       'id': id,
       'employeeId': employeeId,
       'date': date.toIso8601String(),
+      'endDate': endDate?.toIso8601String(),
       'timeOffType': timeOffType,
       'hours': hours,
       'vacationGroupId': vacationGroupId,
@@ -40,6 +43,7 @@ class TimeOffEntry {
       id: map['id'],
       employeeId: map['employeeId'],
       date: DateTime.parse(map['date']),
+      endDate: map['endDate'] != null ? DateTime.parse(map['endDate']) : null,
       timeOffType: map['timeOffType'],
       hours: map['hours'] ?? 0,
       vacationGroupId: map['vacationGroupId'],

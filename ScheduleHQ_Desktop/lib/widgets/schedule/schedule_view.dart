@@ -11,6 +11,7 @@ import '../../database/schedule_note_dao.dart';
 import '../../database/shift_runner_dao.dart';
 import '../../database/shift_type_dao.dart';
 import '../../database/store_hours_dao.dart';
+import '../../database/tracked_employee_dao.dart';
 import '../../models/employee.dart';
 import '../../models/time_off_entry.dart';
 import '../../models/shift_template.dart';
@@ -51,8 +52,10 @@ bool _shouldShowAsLabel(ShiftPlaceholder s) {
   // Check for OFF shift format: 4:00 AM to 3:59 AM (next day)
   final t = s.text.toLowerCase();
   if (t == 'off') {
-    return (s.start.hour == 4 && s.start.minute == 0 &&
-            s.end.hour == 3 && s.end.minute == 59);
+    return (s.start.hour == 4 &&
+        s.start.minute == 0 &&
+        s.end.hour == 3 &&
+        s.end.minute == 59);
   }
   return false;
 }
@@ -349,23 +352,26 @@ class _ScheduleViewState extends State<ScheduleView> {
   Future<void> _deleteShiftWithUndo(Shift shift) async {
     // Check if there's a runner assigned for this shift's employee, date, and shift type
     ShiftRunner? deletedRunner;
-    
+
     // Determine the shift type from the shift's start time
     final shiftType = ShiftRunner.getShiftTypeForTime(
       shift.startTime.hour,
       shift.startTime.minute,
     );
-    
+
     if (shiftType != null) {
       final shiftDate = DateTime(
         shift.startTime.year,
         shift.startTime.month,
         shift.startTime.day,
       );
-      
+
       // Get the runner for this date and shift type
-      final runner = await _shiftRunnerDao.getForDateAndShift(shiftDate, shiftType);
-      
+      final runner = await _shiftRunnerDao.getForDateAndShift(
+        shiftDate,
+        shiftType,
+      );
+
       // Check if the runner is the employee being deleted
       if (runner != null) {
         final employee = await _employeeDao.getById(shift.employeeId);
@@ -374,17 +380,21 @@ class _ScheduleViewState extends State<ScheduleView> {
         }
       }
     }
-    
+
     final action = DeleteShiftAction(
       shift: shift,
       insertFn: (s) => _shiftDao.insert(s),
       deleteFn: (id) => _shiftDao.delete(id),
       deletedRunner: deletedRunner,
-      upsertRunnerFn: deletedRunner != null ? (r) => _shiftRunnerDao.upsert(r) : null,
-      deleteRunnerFn: deletedRunner != null ? (date, type) => _shiftRunnerDao.delete(date, type) : null,
+      upsertRunnerFn: deletedRunner != null
+          ? (r) => _shiftRunnerDao.upsert(r)
+          : null,
+      deleteRunnerFn: deletedRunner != null
+          ? (date, type) => _shiftRunnerDao.delete(date, type)
+          : null,
     );
     await _undoManager.executeAction(action);
-    
+
     // If a runner was deleted, trigger runner table refresh
     if (deletedRunner != null) {
       setState(() {
@@ -461,10 +471,57 @@ class _ScheduleViewState extends State<ScheduleView> {
         final firstDay = DateTime(_date.year, _date.month, 1);
         final lastDay = DateTime(_date.year, _date.month + 1, 0);
 
-        // Load shift runners for this month
+        // Check if this month results in only 4 weeks (need to extend range for 5-week export)
+        // Find Sunday before or on first day
+        final startDate = firstDay.subtract(
+          Duration(days: firstDay.weekday % 7),
+        );
+        // Count weeks
+        var weekCount = 0;
+        var currentDate = startDate;
+        while (currentDate.isBefore(lastDay) ||
+            currentDate.month == _date.month) {
+          weekCount++;
+          currentDate = currentDate.add(const Duration(days: 7));
+          if (weekCount >= 6) break;
+        }
+
+        // Determine the actual start date for data loading
+        final dataStartDate = weekCount == 4
+            ? startDate.subtract(
+                const Duration(days: 7),
+              ) // Include previous week
+            : startDate;
+
+        // Load shift runners for extended range if needed
         final shiftRunners = await _shiftRunnerDao.getForDateRange(
-          firstDay,
+          dataStartDate,
           lastDay,
+        );
+
+        // Load shifts for the extended range if this is a 4-week month
+        List<ShiftPlaceholder> shiftsForPdf = _shifts;
+        if (weekCount == 4) {
+          // Load additional shifts from previous week
+          final previousWeekEnd = startDate; // Exclusive end date
+          final previousWeekStart = startDate.subtract(const Duration(days: 7));
+          final previousWeekShifts = await _shiftDao.getByDateRange(
+            previousWeekStart,
+            previousWeekEnd,
+          );
+          final previousWeekPlaceholders = _shiftsToPlaceholders(
+            previousWeekShifts,
+          );
+
+          // Combine previous week shifts with current shifts
+          // Note: _shifts already contains all time-off entries, so don't add them again
+          shiftsForPdf = [...previousWeekPlaceholders, ..._shifts];
+        }
+
+        // Load tracked employees for stats table
+        final trackedEmployeeDao = TrackedEmployeeDao();
+        final trackedEmployees = await trackedEmployeeDao.getTrackedEmployees(
+          _employees,
         );
 
         if (action == 'pdf_manager') {
@@ -472,7 +529,7 @@ class _ScheduleViewState extends State<ScheduleView> {
             year: _date.year,
             month: _date.month,
             employees: _employees,
-            shifts: _shifts,
+            shifts: shiftsForPdf,
             jobCodeSettings: _jobCodeSettings,
             shiftRunners: shiftRunners,
             shiftTypes: shiftTypes,
@@ -483,17 +540,22 @@ class _ScheduleViewState extends State<ScheduleView> {
           fileType = 'Manager PDF';
           filename = 'manager_schedule_${_date.year}_${_date.month}.pdf';
         } else {
+          // Load time off entries for stats calculation
+          final timeOffEntries = await _timeOffDao.getAllTimeOff();
+
           fileBytes = await SchedulePdfService.generateMonthlyPdf(
             year: _date.year,
             month: _date.month,
             employees: _employees,
-            shifts: _shifts,
+            shifts: shiftsForPdf,
             jobCodeSettings: _jobCodeSettings,
             shiftRunners: shiftRunners,
             shiftTypes: shiftTypes,
             storeHours: StoreHours.cached,
             storeName: StoreHours.cached.storeName,
             storeNsn: StoreHours.cached.storeNsn,
+            trackedEmployees: trackedEmployees,
+            timeOffEntries: timeOffEntries,
           );
           fileType = 'PDF';
           filename = 'schedule_${_date.year}_${_date.month}.pdf';
@@ -564,7 +626,7 @@ class _ScheduleViewState extends State<ScheduleView> {
     // Calculate date range based on current view
     DateTime startDate;
     DateTime endDate;
-    
+
     if (_mode == ScheduleMode.weekly) {
       final weekStart = _date.subtract(Duration(days: _date.weekday % 7));
       startDate = DateTime(weekStart.year, weekStart.month, weekStart.day);
@@ -574,7 +636,7 @@ class _ScheduleViewState extends State<ScheduleView> {
       startDate = DateTime(_date.year, _date.month, 1);
       endDate = DateTime(_date.year, _date.month + 1, 0);
     }
-    
+
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => _PublishScheduleDialog(
@@ -583,7 +645,7 @@ class _ScheduleViewState extends State<ScheduleView> {
         employees: _employees,
       ),
     );
-    
+
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -751,8 +813,9 @@ class _ScheduleViewState extends State<ScheduleView> {
 
   Future<void> _autoFillFromTemplates(DateTime weekStart) async {
     // Get employees who have weekly templates
-    final employeeIdsWithTemplates = await _weeklyTemplateDao.getEmployeeIdsWithTemplates();
-    
+    final employeeIdsWithTemplates = await _weeklyTemplateDao
+        .getEmployeeIdsWithTemplates();
+
     if (employeeIdsWithTemplates.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -776,7 +839,9 @@ class _ScheduleViewState extends State<ScheduleView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No employees with weekly templates found in the current filter.'),
+            content: Text(
+              'No employees with weekly templates found in the current filter.',
+            ),
             duration: Duration(seconds: 4),
           ),
         );
@@ -811,7 +876,9 @@ class _ScheduleViewState extends State<ScheduleView> {
     }
 
     // Get templates for selected employees
-    final templates = await _weeklyTemplateDao.getTemplatesForEmployees(selectedEmployeeIds);
+    final templates = await _weeklyTemplateDao.getTemplatesForEmployees(
+      selectedEmployeeIds,
+    );
 
     // Generate shifts
     int shiftsCreated = 0;
@@ -821,11 +888,11 @@ class _ScheduleViewState extends State<ScheduleView> {
 
     for (final employeeId in selectedEmployeeIds) {
       final employeeTemplates = templates[employeeId] ?? [];
-      
+
       for (final template in employeeTemplates) {
         // Skip blank days (no shift and not marked as OFF)
         if (template.isBlank) continue;
-        
+
         final dayIndex = template.dayOfWeek;
         final day = weekStart.add(Duration(days: dayIndex));
 
@@ -874,17 +941,34 @@ class _ScheduleViewState extends State<ScheduleView> {
         // Parse template times for regular shifts
         final startTimeParts = template.startTime!.split(':');
         final startHour = int.parse(startTimeParts[0]);
-        final startMinute = startTimeParts.length > 1 ? int.parse(startTimeParts[1]) : 0;
+        final startMinute = startTimeParts.length > 1
+            ? int.parse(startTimeParts[1])
+            : 0;
 
         final endTimeParts = template.endTime!.split(':');
         final endHour = int.parse(endTimeParts[0]);
-        final endMinute = endTimeParts.length > 1 ? int.parse(endTimeParts[1]) : 0;
+        final endMinute = endTimeParts.length > 1
+            ? int.parse(endTimeParts[1])
+            : 0;
 
-        final shiftStart = DateTime(day.year, day.month, day.day, startHour, startMinute);
-        var shiftEnd = DateTime(day.year, day.month, day.day, endHour, endMinute);
+        final shiftStart = DateTime(
+          day.year,
+          day.month,
+          day.day,
+          startHour,
+          startMinute,
+        );
+        var shiftEnd = DateTime(
+          day.year,
+          day.month,
+          day.day,
+          endHour,
+          endMinute,
+        );
 
         // Handle overnight shifts
-        if (shiftEnd.isBefore(shiftStart) || shiftEnd.isAtSameMomentAs(shiftStart)) {
+        if (shiftEnd.isBefore(shiftStart) ||
+            shiftEnd.isAtSameMomentAs(shiftStart)) {
           shiftEnd = shiftEnd.add(const Duration(days: 1));
         }
 
@@ -903,7 +987,9 @@ class _ScheduleViewState extends State<ScheduleView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No shifts were created (all slots already filled or no shifts in templates)'),
+            content: Text(
+              'No shifts were created (all slots already filled or no shifts in templates)',
+            ),
           ),
         );
       }
@@ -926,9 +1012,9 @@ class _ScheduleViewState extends State<ScheduleView> {
       if (shiftsDeleted > 0) {
         message += ', replaced $shiftsDeleted existing shift(s)';
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -1312,10 +1398,24 @@ class _ScheduleViewState extends State<ScheduleView> {
                     // Handle "OFF" button - create an OFF label shift (4AM-3:59AM)
                     if (shiftNotes == 'OFF') {
                       // Calculate 4:00 AM start and 3:59 AM next day end
-                      final day = oldShift.id != null ? oldShift.start : newStart;
-                      final offStart = DateTime(day.year, day.month, day.day, 4, 0);
-                      final offEnd = DateTime(day.year, day.month, day.day, 3, 59).add(const Duration(days: 1));
-                      
+                      final day = oldShift.id != null
+                          ? oldShift.start
+                          : newStart;
+                      final offStart = DateTime(
+                        day.year,
+                        day.month,
+                        day.day,
+                        4,
+                        0,
+                      );
+                      final offEnd = DateTime(
+                        day.year,
+                        day.month,
+                        day.day,
+                        3,
+                        59,
+                      ).add(const Duration(days: 1));
+
                       if (oldShift.id != null) {
                         // Update existing shift to OFF
                         final oldShiftModel = Shift(
@@ -1567,8 +1667,14 @@ class _ScheduleViewState extends State<ScheduleView> {
           // Calculate 4:00 AM start and 3:59 AM next day end
           final day = oldShift.id != null ? oldShift.start : newStart;
           final offStart = DateTime(day.year, day.month, day.day, 4, 0);
-          final offEnd = DateTime(day.year, day.month, day.day, 3, 59).add(const Duration(days: 1));
-          
+          final offEnd = DateTime(
+            day.year,
+            day.month,
+            day.day,
+            3,
+            59,
+          ).add(const Duration(days: 1));
+
           if (oldShift.id != null) {
             // Update existing shift to OFF
             final oldShiftModel = Shift(
@@ -1772,8 +1878,12 @@ class _ScheduleViewState extends State<ScheduleView> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Theme.of(ctx).extension<AppColors>()!.warningBackground,
-                  border: Border.all(color: Theme.of(ctx).extension<AppColors>()!.warningBorder),
+                  color: Theme.of(
+                    ctx,
+                  ).extension<AppColors>()!.warningBackground,
+                  border: Border.all(
+                    color: Theme.of(ctx).extension<AppColors>()!.warningBorder,
+                  ),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Column(
@@ -2815,7 +2925,8 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                                 s,
                                                 res['start'] as DateTime,
                                                 res['end'] as DateTime,
-                                                shiftNotes: res['notes'] as String?,
+                                                shiftNotes:
+                                                    res['notes'] as String?,
                                               );
                                             }
                                           },
@@ -2848,9 +2959,7 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: Theme.of(
-                                            context,
-                                          ).dividerColor,
+                                          color: Theme.of(context).dividerColor,
                                           width: 1,
                                         ),
                                       ),
@@ -2868,18 +2977,32 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                                   runnerShiftType,
                                                 )
                                               : null;
-                                          final isDark = Theme.of(context).brightness == Brightness.dark;
+                                          final isDark =
+                                              Theme.of(context).brightness ==
+                                              Brightness.dark;
 
                                           return Container(
                                             decoration: BoxDecoration(
-                                              border: isShiftSelected && !isTimeOffLabel
-                                                  ? Border.all(color: Colors.blue, width: 2)
+                                              border:
+                                                  isShiftSelected &&
+                                                      !isTimeOffLabel
+                                                  ? Border.all(
+                                                      color: Colors.blue,
+                                                      width: 2,
+                                                    )
                                                   : runnerColor != null
-                                                      ? Border.all(color: runnerColor, width: 1.5)
-                                                      : null,
-                                              color: isShiftSelected && !isTimeOffLabel
+                                                  ? Border.all(
+                                                      color: runnerColor,
+                                                      width: 1.5,
+                                                    )
+                                                  : null,
+                                              color:
+                                                  isShiftSelected &&
+                                                      !isTimeOffLabel
                                                   ? Colors.blue.withAlpha(38)
-                                                  : runnerColor?.withOpacity(0.15),
+                                                  : runnerColor?.withOpacity(
+                                                      0.15,
+                                                    ),
                                             ),
                                             child: Center(
                                               child: Text(
@@ -2888,12 +3011,17 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                                     : '$startLabel - $endLabel',
                                                 style: TextStyle(
                                                   fontWeight:
-                                                      isShiftSelected && !isTimeOffLabel
+                                                      isShiftSelected &&
+                                                          !isTimeOffLabel
                                                       ? FontWeight.bold
                                                       : FontWeight.normal,
                                                   color: isDark
-                                                      ? Theme.of(context).colorScheme.onSurface
-                                                      : Theme.of(context).colorScheme.onSurface,
+                                                      ? Theme.of(
+                                                          context,
+                                                        ).colorScheme.onSurface
+                                                      : Theme.of(
+                                                          context,
+                                                        ).colorScheme.onSurface,
                                                   fontSize: 14,
                                                 ),
                                               ),
@@ -2919,12 +3047,16 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                         height: 56,
                                         padding: const EdgeInsets.all(8),
                                         decoration: BoxDecoration(
-                                          color: context.appColors.selectionBackground,
+                                          color: context
+                                              .appColors
+                                              .selectionBackground,
                                           borderRadius: BorderRadius.circular(
                                             4,
                                           ),
                                           border: Border.all(
-                                            color: Theme.of(context).colorScheme.primary,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
                                             width: 2,
                                           ),
                                         ),
@@ -2934,7 +3066,9 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                             style: TextStyle(
                                               fontSize: 12,
                                               fontWeight: FontWeight.bold,
-                                              color: Theme.of(context).colorScheme.primary,
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.primary,
                                             ),
                                           ),
                                         ),
@@ -2955,7 +3089,8 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
                                         'Moving...',
                                         style: TextStyle(
                                           fontSize: 10,
-                                          color: context.appColors.textSecondary,
+                                          color:
+                                              context.appColors.textSecondary,
                                         ),
                                       ),
                                     ),
@@ -3079,7 +3214,13 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
       final offShift = ShiftPlaceholder(
         employeeId: employeeId,
         start: DateTime(day.year, day.month, day.day, 4, 0),
-        end: DateTime(day.year, day.month, day.day, 3, 59).add(const Duration(days: 1)),
+        end: DateTime(
+          day.year,
+          day.month,
+          day.day,
+          3,
+          59,
+        ).add(const Duration(days: 1)),
         text: 'OFF',
       );
       // Use a temporary placeholder to signal this is a new shift
@@ -3304,7 +3445,12 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
           end: DateTime(day.year, day.month, day.day, 0, 0),
           text: 'OFF',
         );
-        widget.onUpdateShift!(tempShift, tempShift.start, tempShift.end, shiftNotes: 'OFF');
+        widget.onUpdateShift!(
+          tempShift,
+          tempShift.start,
+          tempShift.end,
+          shiftNotes: 'OFF',
+        );
         return;
       }
 
@@ -3329,7 +3475,11 @@ class _WeeklyScheduleViewState extends State<WeeklyScheduleView> {
         end: DateTime(day.year, day.month, day.day, 0, 0),
         text: 'Shift',
       );
-      widget.onUpdateShift!(tempShift, res['start'] as DateTime, res['end'] as DateTime);
+      widget.onUpdateShift!(
+        tempShift,
+        res['start'] as DateTime,
+        res['end'] as DateTime,
+      );
     }
   }
 
@@ -3696,16 +3846,6 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
         oldWidget.shiftRunnerRefreshKey != widget.shiftRunnerRefreshKey) {
       _loadShiftRunnerData();
     }
-    if (oldWidget.shifts.length != widget.shifts.length) {
-      print(
-        'MonthlyScheduleView didUpdateWidget: shifts changed from ${oldWidget.shifts.length} to ${widget.shifts.length}',
-      );
-      for (var shift in widget.shifts) {
-        print(
-          '  Shift: employee=${shift.employeeId}, date=${shift.start.year}-${shift.start.month}-${shift.start.day} ${shift.start.hour}:${shift.start.minute}, text=${shift.text}',
-        );
-      }
-    }
   }
 
   Future<void> _loadShiftRunnerData() async {
@@ -3714,17 +3854,20 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     // Load runners for the full calendar view (including visible days from adjacent months)
     final firstDayOfMonth = DateTime(widget.date.year, widget.date.month, 1);
     final lastDayOfMonth = DateTime(widget.date.year, widget.date.month + 1, 0);
-    
+
     // Find the Sunday before or on the first day (start of first visible week)
     final calendarStart = firstDayOfMonth.subtract(
       Duration(days: firstDayOfMonth.weekday % 7),
     );
-    
+
     // Find the Saturday after or on the last day (end of last visible week)
     final daysUntilSaturday = (6 - lastDayOfMonth.weekday % 7) % 7;
     final calendarEnd = lastDayOfMonth.add(Duration(days: daysUntilSaturday));
-    
-    final runners = await _shiftRunnerDao.getForDateRange(calendarStart, calendarEnd);
+
+    final runners = await _shiftRunnerDao.getForDateRange(
+      calendarStart,
+      calendarEnd,
+    );
     if (mounted) {
       setState(() {
         _shiftTypes = shiftTypes;
@@ -3753,12 +3896,14 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     final endTime = shiftTypeObj?.defaultShiftEnd ?? '17:00';
 
     // Get all runners for this day to filter out people already running a different shift
-    final runnersForDay = _shiftRunners.where(
-      (r) =>
-          r.date.year == day.year &&
-          r.date.month == day.month &&
-          r.date.day == day.day,
-    ).toList();
+    final runnersForDay = _shiftRunners
+        .where(
+          (r) =>
+              r.date.year == day.year &&
+              r.date.month == day.month &&
+              r.date.day == day.day,
+        )
+        .toList();
 
     for (final employee in allEmployees) {
       // Check if this employee is already running a different shift on this day
@@ -3792,7 +3937,11 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     return availableList;
   }
 
-  Future<void> _editMonthlyRunner(DateTime day, String shiftType, String? currentRunner) async {
+  Future<void> _editMonthlyRunner(
+    DateTime day,
+    String shiftType,
+    String? currentRunner,
+  ) async {
     // Get shift type info
     final shiftTypeObj = _shiftTypes.cast<ShiftType?>().firstWhere(
       (st) => st?.key == shiftType,
@@ -3802,7 +3951,10 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
     final endTime = shiftTypeObj?.defaultShiftEnd ?? '17:00';
 
     // Load available employees for this shift
-    final availableEmployees = await _getAvailableEmployeesForRunner(day, shiftType);
+    final availableEmployees = await _getAvailableEmployeesForRunner(
+      day,
+      shiftType,
+    );
 
     if (!mounted) return;
 
@@ -3831,7 +3983,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
           (e) => e?.name == result,
           orElse: () => null,
         );
-        
+
         // Create shift with default times if employee doesn't have a shift for this day
         if (employee != null) {
           final existingShifts = await _shiftDao.getByEmployeeAndDateRange(
@@ -3839,39 +3991,44 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
             day,
             day.add(const Duration(days: 1)),
           );
-          
+
           if (existingShifts.isEmpty) {
             // Parse the default shift times
             final startParts = startTime.split(':');
             final endParts = endTime.split(':');
             final shiftStart = DateTime(
-              day.year, day.month, day.day,
-              int.parse(startParts[0]), int.parse(startParts[1]),
+              day.year,
+              day.month,
+              day.day,
+              int.parse(startParts[0]),
+              int.parse(startParts[1]),
             );
             var shiftEnd = DateTime(
-              day.year, day.month, day.day,
-              int.parse(endParts[0]), int.parse(endParts[1]),
+              day.year,
+              day.month,
+              day.day,
+              int.parse(endParts[0]),
+              int.parse(endParts[1]),
             );
             // Handle overnight shifts (end time before start time)
-            if (shiftEnd.isBefore(shiftStart) || shiftEnd.isAtSameMomentAs(shiftStart)) {
+            if (shiftEnd.isBefore(shiftStart) ||
+                shiftEnd.isAtSameMomentAs(shiftStart)) {
               shiftEnd = shiftEnd.add(const Duration(days: 1));
             }
-            
-            await _shiftDao.insert(Shift(
-              employeeId: employee.id!,
-              startTime: shiftStart,
-              endTime: shiftEnd,
-            ));
+
+            await _shiftDao.insert(
+              Shift(
+                employeeId: employee.id!,
+                startTime: shiftStart,
+                endTime: shiftEnd,
+              ),
+            );
           }
         }
-        
+
         // Set the runner
         await _shiftRunnerDao.upsert(
-          ShiftRunner(
-            date: day,
-            shiftType: shiftType,
-            runnerName: result,
-          ),
+          ShiftRunner(date: day, shiftType: shiftType, runnerName: result),
         );
       }
       await _loadShiftRunnerData();
@@ -4067,7 +4224,13 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
       final offShift = ShiftPlaceholder(
         employeeId: employeeId,
         start: DateTime(day.year, day.month, day.day, 4, 0),
-        end: DateTime(day.year, day.month, day.day, 3, 59).add(const Duration(days: 1)),
+        end: DateTime(
+          day.year,
+          day.month,
+          day.day,
+          3,
+          59,
+        ).add(const Duration(days: 1)),
         text: 'OFF',
       );
       // Use a temporary placeholder to signal this is a new shift
@@ -4670,8 +4833,8 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
         border: isSelected
             ? Border.all(color: Colors.blue, width: 2)
             : runnerColor != null
-                ? Border.all(color: runnerColor, width: 2)
-                : null,
+            ? Border.all(color: runnerColor, width: 2)
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -4812,7 +4975,8 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                       if (snapshot.hasData) {
                         final type = snapshot.data!['type'] as String;
                         final available = snapshot.data!['available'] as bool;
-                        final isAllDay = snapshot.data!['isAllDay'] as bool? ?? true;
+                        final isAllDay =
+                            snapshot.data!['isAllDay'] as bool? ?? true;
                         // Only show dash for all-day time-off or unavailability
                         // Partial day time-off should allow scheduling (with warning)
                         if (type == 'time-off' && isAllDay) {
@@ -4899,10 +5063,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
 
                       // Only wrap in Draggable if not a time-off label
                       if (isTimeOffLabel) {
-                        return SizedBox(
-                          height: 50,
-                          child: shiftChip,
-                        );
+                        return SizedBox(height: 50, child: shiftChip);
                       }
 
                       return SizedBox(
@@ -4910,36 +5071,38 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                         child: Draggable<ShiftPlaceholder>(
                           data: shift,
                           feedback: Material(
-                          elevation: 4,
-                          borderRadius: BorderRadius.circular(4),
-                          child: Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.blue.withAlpha(200),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '$startLabel-$endLabel',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.onPrimary,
-                                fontSize: 10,
+                            elevation: 4,
+                            borderRadius: BorderRadius.circular(4),
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withAlpha(200),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '$startLabel-$endLabel',
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimary,
+                                  fontSize: 10,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        childWhenDragging: Opacity(
-                          opacity: 0.3,
-                          child: _buildShiftChip(
-                            shift,
-                            isSelected,
-                            startLabel,
-                            endLabel,
-                            context,
+                          childWhenDragging: Opacity(
+                            opacity: 0.3,
+                            child: _buildShiftChip(
+                              shift,
+                              isSelected,
+                              startLabel,
+                              endLabel,
+                              context,
+                            ),
                           ),
+                          child: shiftChip,
                         ),
-                        child: shiftChip,
-                      ),
-                    );
+                      );
                     }).toList(),
                   ),
           ),
@@ -4992,7 +5155,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
           allWeeks.add(weekDays);
         }
       }
-      
+
       final shiftTypeKeys = _shiftTypes.map((t) => t.key).toList();
 
       String dayAbbr(int weekday) {
@@ -5056,21 +5219,23 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
         return Container(
           padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
           alignment: Alignment.center,
-          color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+          color: Theme.of(
+            context,
+          ).colorScheme.primaryContainer.withOpacity(0.3),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 dayAbbr(day.weekday),
                 style: const TextStyle(
-                  fontWeight: FontWeight.bold, 
+                  fontWeight: FontWeight.bold,
                   fontSize: 9,
                 ),
               ),
               Text(
                 '${day.month}/${day.day}',
                 style: const TextStyle(
-                  fontWeight: FontWeight.w500, 
+                  fontWeight: FontWeight.w500,
                   fontSize: 9,
                 ),
               ),
@@ -5079,10 +5244,19 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
         );
       }
 
-      Future<void> showRunnerContextMenu(Offset position, DateTime day, String shiftType) async {
+      Future<void> showRunnerContextMenu(
+        Offset position,
+        DateTime day,
+        String shiftType,
+      ) async {
         final result = await showMenu<String>(
           context: context,
-          position: RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy),
+          position: RelativeRect.fromLTRB(
+            position.dx,
+            position.dy,
+            position.dx,
+            position.dy,
+          ),
           items: [
             const PopupMenuItem<String>(
               value: 'clear',
@@ -5110,7 +5284,11 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
 
         return GestureDetector(
           onSecondaryTapDown: hasRunner
-              ? (details) => showRunnerContextMenu(details.globalPosition, day, shiftType)
+              ? (details) => showRunnerContextMenu(
+                  details.globalPosition,
+                  day,
+                  shiftType,
+                )
               : null,
           child: InkWell(
             onTap: () => _editMonthlyRunner(day, shiftType, runner),
@@ -5119,14 +5297,16 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
               alignment: Alignment.center,
               constraints: const BoxConstraints(minHeight: 28),
               decoration: BoxDecoration(
-                color: hasRunner ? getShiftColor(shiftType).withOpacity(0.1) : null,
+                color: hasRunner
+                    ? getShiftColor(shiftType).withOpacity(0.1)
+                    : null,
               ),
               child: Text(
                 runner ?? '',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 10,
-                  color: hasRunner 
+                  color: hasRunner
                       ? context.appColors.textPrimary
                       : context.appColors.textTertiary,
                 ),
@@ -5151,7 +5331,9 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
           child: Table(
             defaultColumnWidth: const FixedColumnWidth(55),
             columnWidths: const {
-              0: FixedColumnWidth(45), // Day column (narrower now with stacked layout)
+              0: FixedColumnWidth(
+                45,
+              ), // Day column (narrower now with stacked layout)
             },
             border: TableBorder.all(color: Colors.grey.shade300, width: 1),
             children: weekDays.map((day) {
@@ -5223,20 +5405,29 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                 padding: const EdgeInsets.only(left: 4, right: 4, top: 4),
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primaryContainer.withOpacity(0.5),
                     border: Border.all(
-                      color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.primary.withOpacity(0.5),
                       width: 2,
                     ),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      SizedBox(width: 45, child: buildHeaderCell('')), // Match day column width
-                      ...shiftTypeKeys.map((shiftType) => SizedBox(
-                        width: 55, // Match table column width
-                        child: buildShiftHeader(shiftType),
-                      )),
+                      SizedBox(
+                        width: 45,
+                        child: buildHeaderCell(''),
+                      ), // Match day column width
+                      ...shiftTypeKeys.map(
+                        (shiftType) => SizedBox(
+                          width: 55, // Match table column width
+                          child: buildShiftHeader(shiftType),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -5267,7 +5458,8 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final dayColumnWidth = 120.0;
-              const tablePadding = 40.0; // Extra padding to prevent edge overhang
+              const tablePadding =
+                  40.0; // Extra padding to prevent edge overhang
 
               final availableWidth =
                   constraints.maxWidth - dayColumnWidth - tablePadding;
@@ -5280,9 +5472,7 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
 
               // Account for borders (2px on each side = 4px total)
               final totalWidth =
-                  dayColumnWidth +
-                  (cellWidth * widget.employees.length) +
-                  4;
+                  dayColumnWidth + (cellWidth * widget.employees.length) + 4;
 
               List<Widget> buildEmployeeHeaderCells() {
                 final cells = <Widget>[];
@@ -5291,7 +5481,8 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
 
                   final bg = jobCodeColorFor(employee.jobCode);
                   final fg =
-                      ThemeData.estimateBrightnessForColor(bg) == Brightness.dark
+                      ThemeData.estimateBrightnessForColor(bg) ==
+                          Brightness.dark
                       ? Theme.of(context).colorScheme.surface
                       : Theme.of(context).colorScheme.onSurface;
 
@@ -5341,7 +5532,9 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                           Container(
                             width: totalWidth,
                             decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primaryContainer,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.primaryContainer,
                               border: Border.all(
                                 color: Theme.of(context).dividerColor,
                                 width: 2,
@@ -5371,163 +5564,201 @@ class _MonthlyScheduleViewState extends State<MonthlyScheduleView> {
                             child: ListView.builder(
                               padding: EdgeInsets.zero,
                               itemCount: weeks.length,
-                        itemBuilder: (context, weekIndex) {
-                          final week = weeks[weekIndex];
-
-                          return Container(
-                            width: totalWidth,
-                            margin: const EdgeInsets.only(bottom: 12),
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: Theme.of(context).dividerColor,
-                                width: 2,
-                              ),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Column(
-                              children: week.asMap().entries.map((entry) {
-                                final dayIndex = entry.key;
-                                final day = entry.value;
-
-                                if (day == null) {
-                                  return const SizedBox.shrink();
-                                }
-
-                                final isCurrentMonth =
-                                    day.month == widget.date.month;
-                                final isWeekend =
-                                    day.weekday == DateTime.saturday ||
-                                    day.weekday == DateTime.sunday;
-                                final dayName = dayNames[day.weekday % 7];
+                              itemBuilder: (context, weekIndex) {
+                                final week = weeks[weekIndex];
 
                                 return Container(
+                                  width: totalWidth,
+                                  margin: const EdgeInsets.only(bottom: 12),
                                   decoration: BoxDecoration(
-                                    border: dayIndex < 6
-                                        ? Border(
-                                            bottom: BorderSide(
-                                              color: Theme.of(
-                                                context,
-                                              ).dividerColor,
-                                            ),
-                                          )
-                                        : null,
+                                    border: Border.all(
+                                      color: Theme.of(context).dividerColor,
+                                      width: 2,
+                                    ),
+                                    borderRadius: BorderRadius.circular(8),
                                   ),
-                                  child: IntrinsicHeight(
-                                    child: Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.stretch,
-                                      children: [
-                                        // Day label column with notes
-                                        GestureDetector(
-                                          onTap: () =>
-                                              _showNoteDialog(context, day),
-                                          child: Container(
-                                            width: dayColumnWidth,
-                                            constraints: const BoxConstraints(minHeight: 50),
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                            decoration: BoxDecoration(
-                                              border: Border(
-                                                right: BorderSide(
-                                                  color: Theme.of(
-                                                    context,
-                                                  ).dividerColor,
-                                                  width: 2,
+                                  child: Column(
+                                    children: week.asMap().entries.map((entry) {
+                                      final dayIndex = entry.key;
+                                      final day = entry.value;
+
+                                      if (day == null) {
+                                        return const SizedBox.shrink();
+                                      }
+
+                                      final isCurrentMonth =
+                                          day.month == widget.date.month;
+                                      final isWeekend =
+                                          day.weekday == DateTime.saturday ||
+                                          day.weekday == DateTime.sunday;
+                                      final dayName = dayNames[day.weekday % 7];
+
+                                      return Container(
+                                        decoration: BoxDecoration(
+                                          border: dayIndex < 6
+                                              ? Border(
+                                                  bottom: BorderSide(
+                                                    color: Theme.of(
+                                                      context,
+                                                    ).dividerColor,
+                                                  ),
+                                                )
+                                              : null,
+                                        ),
+                                        child: IntrinsicHeight(
+                                          child: Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              // Day label column with notes
+                                              GestureDetector(
+                                                onTap: () => _showNoteDialog(
+                                                  context,
+                                                  day,
+                                                ),
+                                                child: Container(
+                                                  width: dayColumnWidth,
+                                                  constraints:
+                                                      const BoxConstraints(
+                                                        minHeight: 50,
+                                                      ),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 4,
+                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    border: Border(
+                                                      right: BorderSide(
+                                                        color: Theme.of(
+                                                          context,
+                                                        ).dividerColor,
+                                                        width: 2,
+                                                      ),
+                                                    ),
+                                                    color: isWeekend
+                                                        ? Theme.of(context)
+                                                              .colorScheme
+                                                              .primaryContainer
+                                                              .withAlpha(51)
+                                                        : !isCurrentMonth
+                                                        ? Theme.of(context)
+                                                              .colorScheme
+                                                              .surfaceContainerHighest
+                                                              .withAlpha(25)
+                                                        : null,
+                                                  ),
+                                                  child: Row(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .center,
+                                                    children: [
+                                                      // Day name and date
+                                                      Column(
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        mainAxisAlignment:
+                                                            MainAxisAlignment
+                                                                .center,
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        children: [
+                                                          Text(
+                                                            dayName,
+                                                            style:
+                                                                const TextStyle(
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .bold,
+                                                                  fontSize: 14,
+                                                                ),
+                                                          ),
+                                                          Text(
+                                                            '${day.month}/${day.day}',
+                                                            style: TextStyle(
+                                                              fontSize: 12,
+                                                              color:
+                                                                  !isCurrentMonth
+                                                                  ? Colors.grey
+                                                                  : day.day ==
+                                                                            DateTime.now().day &&
+                                                                        day.month ==
+                                                                            DateTime.now().month &&
+                                                                        day.year ==
+                                                                            DateTime.now().year
+                                                                  ? Theme.of(
+                                                                          context,
+                                                                        )
+                                                                        .colorScheme
+                                                                        .primary
+                                                                  : null,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                      if (_hasNoteForDay(
+                                                        day,
+                                                      )) ...[
+                                                        const SizedBox(
+                                                          width: 4,
+                                                        ),
+                                                        Expanded(
+                                                          child: Text(
+                                                            _getNoteForDay(day),
+                                                            style:
+                                                                const TextStyle(
+                                                                  fontSize: 9,
+                                                                  color: Colors
+                                                                      .amber,
+                                                                ),
+                                                            maxLines: 2,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
+                                                        ),
+                                                        const Icon(
+                                                          Icons.note,
+                                                          size: 14,
+                                                          color: Colors.amber,
+                                                        ),
+                                                      ],
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
-                                              color: isWeekend
-                                                  ? Theme.of(context)
-                                                        .colorScheme
-                                                        .primaryContainer
-                                                        .withAlpha(51)
-                                                  : !isCurrentMonth
-                                                  ? Theme.of(context)
-                                                        .colorScheme
-                                                        .surfaceContainerHighest
-                                                        .withAlpha(25)
-                                                  : null,
-                                            ),
-                                            child: Row(
-                                              crossAxisAlignment: CrossAxisAlignment.center,
-                                              children: [
-                                                // Day name and date
-                                                Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    Text(
-                                                      dayName,
-                                                      style: const TextStyle(
-                                                        fontWeight: FontWeight.bold,
-                                                        fontSize: 14,
-                                                      ),
-                                                    ),
-                                                    Text(
-                                                      '${day.month}/${day.day}',
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        color: !isCurrentMonth
-                                                            ? Colors.grey
-                                                            : day.day == DateTime.now().day &&
-                                                                  day.month == DateTime.now().month &&
-                                                                  day.year == DateTime.now().year
-                                                            ? Theme.of(context).colorScheme.primary
-                                                            : null,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                                if (_hasNoteForDay(day)) ...[
-                                                  const SizedBox(width: 4),
-                                                  Expanded(
-                                                    child: Text(
-                                                      _getNoteForDay(day),
-                                                      style: const TextStyle(
-                                                        fontSize: 9,
-                                                        color: Colors.amber,
-                                                      ),
-                                                      maxLines: 2,
-                                                      overflow: TextOverflow.ellipsis,
-                                                    ),
-                                                  ),
-                                                  const Icon(
-                                                    Icons.note,
-                                                    size: 14,
-                                                    color: Colors.amber,
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
+
+                                              // Employee cells for this day
+                                              ...widget.employees.map((
+                                                employee,
+                                              ) {
+                                                return _buildMonthlyEmployeeCell(
+                                                  context: context,
+                                                  day: day,
+                                                  isCurrentMonth:
+                                                      isCurrentMonth,
+                                                  isWeekend: isWeekend,
+                                                  employee: employee,
+                                                  cellWidth: cellWidth,
+                                                );
+                                              }).toList(),
+                                            ],
                                           ),
                                         ),
-
-                                        // Employee cells for this day
-                                        ...widget.employees.map((employee) {
-                                          return _buildMonthlyEmployeeCell(
-                                            context: context,
-                                            day: day,
-                                            isCurrentMonth: isCurrentMonth,
-                                            isWeekend: isWeekend,
-                                            employee: employee,
-                                            cellWidth: cellWidth,
-                                          );
-                                        }).toList(),
-                                      ],
-                                    ),
+                                      );
+                                    }).toList(),
                                   ),
                                 );
-                              }).toList(),
+                              },
                             ),
-                          );
-                        },
+                          ),
+                        ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          ),
-        );
+              );
             },
           ),
         ),
@@ -5596,7 +5827,8 @@ class _MonthlyRunnerSearchDialog extends StatefulWidget {
       _MonthlyRunnerSearchDialogState();
 }
 
-class _MonthlyRunnerSearchDialogState extends State<_MonthlyRunnerSearchDialog> {
+class _MonthlyRunnerSearchDialogState
+    extends State<_MonthlyRunnerSearchDialog> {
   late TextEditingController _searchController;
   List<Employee> _filteredEmployees = [];
 
@@ -5651,7 +5883,12 @@ class _MonthlyRunnerSearchDialogState extends State<_MonthlyRunnerSearchDialog> 
                 ),
                 Text(
                   '${widget.day.month}/${widget.day.day} • ${widget.startTime} - ${widget.endTime}',
-                  style: TextStyle(fontSize: 12, color: Theme.of(context).extension<AppColors>()!.textSecondary),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(
+                      context,
+                    ).extension<AppColors>()!.textSecondary,
+                  ),
                 ),
               ],
             ),
@@ -5687,7 +5924,9 @@ class _MonthlyRunnerSearchDialogState extends State<_MonthlyRunnerSearchDialog> 
                   borderRadius: BorderRadius.circular(8),
                 ),
                 filled: true,
-                fillColor: Theme.of(context).extension<AppColors>()!.surfaceVariant,
+                fillColor: Theme.of(
+                  context,
+                ).extension<AppColors>()!.surfaceVariant,
               ),
               onChanged: _filterEmployees,
             ),
@@ -5710,7 +5949,12 @@ class _MonthlyRunnerSearchDialogState extends State<_MonthlyRunnerSearchDialog> 
                         _searchController.text.isEmpty
                             ? 'No available employees for this shift'
                             : 'No matching employees',
-                        style: TextStyle(color: Theme.of(context).extension<AppColors>()!.textTertiary, fontSize: 13),
+                        style: TextStyle(
+                          color: Theme.of(
+                            context,
+                          ).extension<AppColors>()!.textTertiary,
+                          fontSize: 13,
+                        ),
                       ),
                     )
                   : ListView.builder(
@@ -5801,10 +6045,12 @@ class _AutoFillFromWeeklyTemplatesDialog extends StatefulWidget {
   });
 
   @override
-  State<_AutoFillFromWeeklyTemplatesDialog> createState() => _AutoFillFromWeeklyTemplatesDialogState();
+  State<_AutoFillFromWeeklyTemplatesDialog> createState() =>
+      _AutoFillFromWeeklyTemplatesDialogState();
 }
 
-class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyTemplatesDialog> {
+class _AutoFillFromWeeklyTemplatesDialogState
+    extends State<_AutoFillFromWeeklyTemplatesDialog> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   Set<int> _selectedEmployeeIds = {};
@@ -5813,7 +6059,15 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
   Map<int, List<WeeklyTemplateEntry>> _employeeTemplates = {};
   bool _isLoading = true;
 
-  static const List<String> _dayAbbreviations = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  static const List<String> _dayAbbreviations = [
+    'S',
+    'M',
+    'T',
+    'W',
+    'T',
+    'F',
+    'S',
+  ];
 
   @override
   void initState() {
@@ -5829,7 +6083,9 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
 
   Future<void> _loadTemplates() async {
     final employeeIds = widget.employees.map((e) => e.id!).toList();
-    final templates = await widget.weeklyTemplateDao.getTemplatesForEmployees(employeeIds);
+    final templates = await widget.weeklyTemplateDao.getTemplatesForEmployees(
+      employeeIds,
+    );
     setState(() {
       _employeeTemplates = templates;
       _isLoading = false;
@@ -5839,20 +6095,25 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
   List<Employee> get _filteredEmployees {
     if (_searchQuery.isEmpty) return widget.employees;
     final query = _searchQuery.toLowerCase();
-    return widget.employees.where((e) => 
-      e.name.toLowerCase().contains(query) ||
-      e.jobCode.toLowerCase().contains(query)
-    ).toList();
+    return widget.employees
+        .where(
+          (e) =>
+              e.name.toLowerCase().contains(query) ||
+              e.jobCode.toLowerCase().contains(query),
+        )
+        .toList();
   }
 
   String _getTemplatePreview(int employeeId) {
     final templates = _employeeTemplates[employeeId] ?? [];
     if (templates.isEmpty) return 'No template';
-    
+
     final parts = <String>[];
     for (final entry in templates) {
       if (entry.hasShift) {
-        parts.add('${_dayAbbreviations[entry.dayOfWeek]}: ${entry.startTime}-${entry.endTime}');
+        parts.add(
+          '${_dayAbbreviations[entry.dayOfWeek]}: ${entry.startTime}-${entry.endTime}',
+        );
       } else if (entry.isOff) {
         parts.add('${_dayAbbreviations[entry.dayOfWeek]}: OFF');
       }
@@ -5906,12 +6167,15 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
                             )
                           : null,
                       border: const OutlineInputBorder(),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                     onChanged: (value) => setState(() => _searchQuery = value),
                   ),
                   const SizedBox(height: 8),
-                  
+
                   // Selection controls
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -5935,7 +6199,7 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
                     ],
                   ),
                   const Divider(),
-                  
+
                   // Employee list
                   Expanded(
                     child: _filteredEmployees.isEmpty
@@ -5944,9 +6208,13 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
                             itemCount: _filteredEmployees.length,
                             itemBuilder: (context, index) {
                               final employee = _filteredEmployees[index];
-                              final isSelected = _selectedEmployeeIds.contains(employee.id);
-                              final templatePreview = _getTemplatePreview(employee.id!);
-                              
+                              final isSelected = _selectedEmployeeIds.contains(
+                                employee.id,
+                              );
+                              final templatePreview = _getTemplatePreview(
+                                employee.id!,
+                              );
+
                               return CheckboxListTile(
                                 value: isSelected,
                                 onChanged: (value) {
@@ -5964,7 +6232,12 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
                                   children: [
                                     Text(
                                       employee.jobCode,
-                                      style: TextStyle(color: Theme.of(context).extension<AppColors>()!.textSecondary, fontSize: 12),
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).extension<AppColors>()!.textSecondary,
+                                        fontSize: 12,
+                                      ),
                                     ),
                                     Text(
                                       templatePreview,
@@ -5980,18 +6253,21 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
                                 ),
                                 isThreeLine: true,
                                 dense: true,
-                                controlAffinity: ListTileControlAffinity.leading,
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
                               );
                             },
                           ),
                   ),
-                  
+
                   const Divider(),
-                  
+
                   // Options
                   CheckboxListTile(
                     title: const Text('Skip employees with existing shifts'),
-                    subtitle: const Text('Don\'t create shifts for days that already have one'),
+                    subtitle: const Text(
+                      'Don\'t create shifts for days that already have one',
+                    ),
                     value: _skipExisting,
                     contentPadding: EdgeInsets.zero,
                     dense: true,
@@ -6009,11 +6285,14 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
                       padding: const EdgeInsets.only(left: 32),
                       child: CheckboxListTile(
                         title: const Text('Override existing shifts'),
-                        subtitle: const Text('Delete existing shifts and replace with template'),
+                        subtitle: const Text(
+                          'Delete existing shifts and replace with template',
+                        ),
                         value: _overrideExisting,
                         contentPadding: EdgeInsets.zero,
                         dense: true,
-                        onChanged: (v) => setState(() => _overrideExisting = v ?? false),
+                        onChanged: (v) =>
+                            setState(() => _overrideExisting = v ?? false),
                       ),
                     ),
                 ],
@@ -6030,10 +6309,10 @@ class _AutoFillFromWeeklyTemplatesDialogState extends State<_AutoFillFromWeeklyT
           onPressed: _selectedEmployeeIds.isEmpty
               ? null
               : () => Navigator.pop(context, {
-                    'selectedEmployees': _selectedEmployeeIds.toList(),
-                    'skipExisting': _skipExisting,
-                    'overrideExisting': _overrideExisting,
-                  }),
+                  'selectedEmployees': _selectedEmployeeIds.toList(),
+                  'skipExisting': _skipExisting,
+                  'overrideExisting': _overrideExisting,
+                }),
         ),
       ],
     );
@@ -6096,14 +6375,14 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
 
   Future<void> _publish() async {
     setState(() => _publishing = true);
-    
+
     try {
       final result = await FirestoreSyncService.instance.publishSchedule(
         startDate: _startDate,
         endDate: _endDate,
         employeeIds: _publishAll ? null : _selectedEmployeeIds.toList(),
       );
-      
+
       if (mounted) {
         if (result.success) {
           Navigator.pop(context, true);
@@ -6176,7 +6455,7 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
               style: TextStyle(color: Colors.grey),
             ),
             const SizedBox(height: 16),
-            
+
             // Date range selector
             Row(
               children: [
@@ -6187,7 +6466,10 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
                       decoration: const InputDecoration(
                         labelText: 'From',
                         border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
                       ),
                       child: Text(
                         '${_startDate.month}/${_startDate.day}/${_startDate.year}',
@@ -6203,7 +6485,10 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
                       decoration: const InputDecoration(
                         labelText: 'To',
                         border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
                       ),
                       child: Text(
                         '${_endDate.month}/${_endDate.day}/${_endDate.year}',
@@ -6214,7 +6499,7 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
               ],
             ),
             const SizedBox(height: 16),
-            
+
             // Employee selection
             CheckboxListTile(
               title: const Text('Publish for all employees'),
@@ -6222,10 +6507,13 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
               contentPadding: EdgeInsets.zero,
               onChanged: (v) => setState(() => _publishAll = v ?? true),
             ),
-            
+
             if (!_publishAll) ...[
               const Divider(),
-              const Text('Select employees:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text(
+                'Select employees:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 8),
               SizedBox(
                 height: 200,
@@ -6252,7 +6540,7 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
                 ),
               ),
             ],
-            
+
             if (_lastPublishInfo != null) ...[
               const Divider(),
               Text(
@@ -6269,7 +6557,8 @@ class _PublishScheduleDialogState extends State<_PublishScheduleDialog> {
           child: const Text('Cancel'),
         ),
         ElevatedButton.icon(
-          onPressed: _publishing || (!_publishAll && _selectedEmployeeIds.isEmpty)
+          onPressed:
+              _publishing || (!_publishAll && _selectedEmployeeIds.isEmpty)
               ? null
               : _publish,
           icon: _publishing

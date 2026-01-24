@@ -14,12 +14,12 @@ class TrimesterSummary {
   final DateTime start;
   final DateTime end;
 
-  final int earned;        // typically 30
-  final int carryoverIn;   // from previous trimester
-  final int available;     // earned + carryoverIn, capped at 40
-  final int used;          // PTO used in this trimester (hours)
-  final int remaining;     // available - used
-  final int carryoverOut;  // min(remaining, maxCarryover)
+  final int earned; // typically 30
+  final int carryoverIn; // from previous trimester
+  final int available; // earned + carryoverIn, capped at 40
+  final int used; // PTO used in this trimester (hours)
+  final int remaining; // available - used
+  final int carryoverOut; // min(remaining, maxCarryover)
 
   TrimesterSummary({
     required this.label,
@@ -51,7 +51,8 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
   List<Employee> _employees = [];
   List<JobCodeSettings> _jobCodeSettings = [];
   Settings? _settings;
-  List<TimeOffEntry> _allEntries = [];
+  List<TimeOffEntry> _allEntries = []; // Expanded entries for PTO hours
+  List<TimeOffEntry> _rawEntries = []; // Raw entries for vacation weeks
   int _selectedTrimesterYear = DateTime.now().year;
   int? _selectedEmployeeId;
 
@@ -72,6 +73,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
       final employees = await _employeeDao.getEmployees();
       final settings = await _settingsDao.getSettings();
       final entries = await _timeOffDao.getAllTimeOff();
+      final rawEntries = await _timeOffDao.getAllTimeOffRaw();
       final jobCodeSettings = await _jobCodeSettingsDao.getAll();
 
       // Find employees with PTO enabled for the dropdown
@@ -90,9 +92,12 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
 
         // All entries (model enforces non-nullable fields)
         _allEntries = entries;
+        _rawEntries = rawEntries;
 
         // Default selected employee to first PTO-enabled employee
-        _selectedEmployeeId = ptoEmployees.isNotEmpty ? ptoEmployees.first.id : null;
+        _selectedEmployeeId = ptoEmployees.isNotEmpty
+            ? ptoEmployees.first.id
+            : null;
       });
     } catch (e) {
       debugPrint("Tracker load error: $e");
@@ -101,6 +106,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
         _jobCodeSettings = [];
         _settings = null;
         _allEntries = [];
+        _rawEntries = [];
       });
     }
   }
@@ -159,12 +165,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
   Future<Map<String, dynamic>> _calculatePto(Employee e) async {
     try {
       if (_settings == null) {
-        return {
-          'allowance': 0,
-          'carryover': 0,
-          'used': 0,
-          'remaining': 0,
-        };
+        return {'allowance': 0, 'carryover': 0, 'used': 0, 'remaining': 0};
       }
 
       final settings = _settings!;
@@ -176,14 +177,14 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
         trimesterStart: trimesterStart,
       );
 
-      // PTO entries using new schema
-      final ptoCount = _allEntries.where((entry) {
-        if (entry.employeeId != e.id) return false;
-        if (entry.timeOffType != "pto") return false;
-        return _trimesterStart(entry.date) == trimesterStart;
-      }).length;
-
-      final usedHours = ptoCount * settings.ptoHoursPerRequest;
+      // PTO entries using new schema - sum actual hours
+      final usedHours = _allEntries
+          .where((entry) {
+            if (entry.employeeId != e.id) return false;
+            if (entry.timeOffType != "pto") return false;
+            return _trimesterStart(entry.date) == trimesterStart;
+          })
+          .fold(0, (sum, entry) => sum + entry.hours);
 
       final isFirstTrimester =
           trimesterStart.month == 1 && trimesterStart.day == 1;
@@ -194,15 +195,14 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
       } else {
         final unused =
             (settings.ptoHoursPerTrimester + history.carryoverHours) -
-                usedHours;
+            usedHours;
 
         carryover = unused > 0
             ? unused.clamp(0, settings.maxCarryoverHours)
             : 0;
       }
 
-      final remaining =
-          (settings.ptoHoursPerTrimester + carryover) - usedHours;
+      final remaining = (settings.ptoHoursPerTrimester + carryover) - usedHours;
 
       return {
         'allowance': settings.ptoHoursPerTrimester,
@@ -212,12 +212,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
       };
     } catch (e) {
       debugPrint("PTO calc error: $e");
-      return {
-        'allowance': 0,
-        'carryover': 0,
-        'used': 0,
-        'remaining': 0,
-      };
+      return {'allowance': 0, 'carryover': 0, 'used': 0, 'remaining': 0};
     }
   }
 
@@ -231,7 +226,8 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
       return [];
     }
 
-    final int earnedPerTrimester = settings.ptoHoursPerTrimester; // should be 30
+    final int earnedPerTrimester =
+        settings.ptoHoursPerTrimester; // should be 30
     const int maxCap = 40; // hard cap per your rule
     final int maxCarryover = settings.maxCarryoverHours; // should be 10
 
@@ -246,15 +242,15 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
       final start = t['start'] as DateTime;
       final end = t['end'] as DateTime;
 
-      // Count PTO entries in this trimester
-      final ptoCount = _allEntries.where((entry) {
-        if (entry.employeeId != e.id) return false;
-        if (entry.timeOffType != "pto") return false;
-        final d = entry.date;
-        return !d.isBefore(start) && !d.isAfter(end);
-      }).length;
-
-      final usedHours = ptoCount * settings.ptoHoursPerRequest;
+      // Sum actual PTO hours in this trimester
+      final usedHours = _allEntries
+          .where((entry) {
+            if (entry.employeeId != e.id) return false;
+            if (entry.timeOffType != "pto") return false;
+            final d = entry.date;
+            return !d.isBefore(start) && !d.isAfter(end);
+          })
+          .fold(0, (sum, entry) => sum + entry.hours);
 
       // Available = earned + carryover, capped at 40
       int available = earnedPerTrimester + carryover;
@@ -296,16 +292,18 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
 
   int _vacationWeeksUsed(Employee e) {
     try {
-      final Set<String> groups = {};
-      for (final entry in _allEntries) {
+      // Use raw entries to count vacation weeks (not expanded)
+      // Each vacation entry with endDate represents one week
+      int vacationWeeks = 0;
+
+      for (final entry in _rawEntries) {
         if (entry.employeeId != e.id) continue;
         if (entry.timeOffType != "vac") continue;
-        final gid = entry.vacationGroupId;
-        if (gid == null || gid.isEmpty) continue;
-        groups.add(gid);
+        // Each raw vacation entry counts as 1 week
+        vacationWeeks++;
       }
 
-      return groups.length;
+      return vacationWeeks;
     } catch (e) {
       debugPrint("Vacation calc error: $e");
       return 0;
@@ -328,15 +326,11 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
   @override
   Widget build(BuildContext context) {
     if (_settings == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("PTO / VAC Tracker"),
-      ),
+      appBar: AppBar(title: const Text("PTO / VAC Tracker")),
       body: RefreshIndicator(
         onRefresh: _loadAll,
         child: SingleChildScrollView(
@@ -378,10 +372,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
               children: [
                 const Text(
                   "PTO summary",
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 const Divider(),
                 SingleChildScrollView(
@@ -421,7 +412,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
 
       for (final e in _employees) {
         if (e.id == null) continue;
-        
+
         // Only include employees with PTO-enabled job codes
         if (!_hasPtoEnabled(e)) continue;
 
@@ -466,18 +457,17 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
               children: [
                 const Text(
                   "PTO History",
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 DropdownButton<int>(
                   value: _selectedTrimesterYear,
                   items: [previousYear, currentYear]
-                      .map((y) => DropdownMenuItem<int>(
-                            value: y,
-                            child: Text(y.toString()),
-                          ))
+                      .map(
+                        (y) => DropdownMenuItem<int>(
+                          value: y,
+                          child: Text(y.toString()),
+                        ),
+                      )
                       .toList(),
                   onChanged: (v) {
                     if (v == null) return;
@@ -500,10 +490,12 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
                       isExpanded: true,
                       items: _employees
                           .where((ev) => ev.id != null && _hasPtoEnabled(ev))
-                          .map((ev) => DropdownMenuItem<int?>(
-                                value: ev.id,
-                                child: Text(ev.name),
-                              ))
+                          .map(
+                            (ev) => DropdownMenuItem<int?>(
+                              value: ev.id,
+                              child: Text(ev.name),
+                            ),
+                          )
                           .toList(),
                       onChanged: (v) {
                         setState(() => _selectedEmployeeId = v);
@@ -516,8 +508,14 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
 
             Builder(
               builder: (_) {
-                final selected = _employees.firstWhere((ev) => ev.id == _selectedEmployeeId, orElse: () => _employees.first);
-                final summaries = _calculateTrimesterSummaries(selected, year: _selectedTrimesterYear);
+                final selected = _employees.firstWhere(
+                  (ev) => ev.id == _selectedEmployeeId,
+                  orElse: () => _employees.first,
+                );
+                final summaries = _calculateTrimesterSummaries(
+                  selected,
+                  year: _selectedTrimesterYear,
+                );
                 if (summaries.isEmpty) return const SizedBox.shrink();
 
                 return Padding(
@@ -525,8 +523,6 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-
-
                       Center(
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 640),
@@ -536,7 +532,9 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
                               crossAxisAlignment: CrossAxisAlignment.center,
                               children: [
                                 TabBar(
-                                  labelColor: Theme.of(context).colorScheme.primary,
+                                  labelColor: Theme.of(
+                                    context,
+                                  ).colorScheme.primary,
                                   unselectedLabelColor: Colors.grey,
                                   tabs: const [
                                     Tab(text: 'T1'),
@@ -551,21 +549,37 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
                                       for (final t in summaries)
                                         SingleChildScrollView(
                                           child: Padding(
-                                            padding: const EdgeInsets.only(top: 12, left: 8, right: 8),
+                                            padding: const EdgeInsets.only(
+                                              top: 12,
+                                              left: 8,
+                                              right: 8,
+                                            ),
                                             child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.center,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.center,
                                               children: [
                                                 Text(
                                                   "${_formatDate(t.start)} – ${_formatDate(t.end)}",
-                                                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                                                  style: const TextStyle(
+                                                    fontSize: 13,
+                                                    color: Colors.grey,
+                                                  ),
                                                 ),
                                                 const SizedBox(height: 8),
                                                 Text("Earned: ${t.earned} hrs"),
-                                                Text("Carryover In: ${t.carryoverIn} hrs"),
-                                                Text("Available: ${t.available} hrs"),
+                                                Text(
+                                                  "Carryover In: ${t.carryoverIn} hrs",
+                                                ),
+                                                Text(
+                                                  "Available: ${t.available} hrs",
+                                                ),
                                                 Text("Used: ${t.used} hrs"),
-                                                Text("Remaining: ${t.remaining} hrs"),
-                                                Text("Carryover Out: ${t.carryoverOut} hrs"),
+                                                Text(
+                                                  "Remaining: ${t.remaining} hrs",
+                                                ),
+                                                Text(
+                                                  "Carryover Out: ${t.carryoverOut} hrs",
+                                                ),
                                               ],
                                             ),
                                           ),
@@ -599,8 +613,10 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
 
   Widget _buildVacationSection() {
     // Only show employees with 1 or more vacation weeks allowed
-    final vacationEmployees = _employees.where((e) => e.vacationWeeksAllowed >= 1).toList();
-    
+    final vacationEmployees = _employees
+        .where((e) => e.vacationWeeksAllowed >= 1)
+        .toList();
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -609,10 +625,7 @@ class _PtoVacTrackerPageState extends State<PtoVacTrackerPage> {
           children: [
             const Text(
               "Vacation Tracking",
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
             const Divider(),
             ...vacationEmployees.map((e) => _buildVacationRow(e)),
